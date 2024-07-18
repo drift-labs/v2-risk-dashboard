@@ -24,10 +24,17 @@ from driftpy.constants.numeric_constants import (
 )
 from driftpy.types import is_variant
 from driftpy.pickle.vat import Vat
-from driftpy.constants.spot_markets import mainnet_spot_market_configs, devnet_spot_market_configs
-from driftpy.constants.perp_markets import mainnet_perp_market_configs, devnet_perp_market_configs
+from driftpy.constants.spot_markets import (
+    mainnet_spot_market_configs,
+    devnet_spot_market_configs,
+)
+from driftpy.constants.perp_markets import (
+    mainnet_perp_market_configs,
+    devnet_perp_market_configs,
+)
 
 from utils import load_newest_files, load_vat, to_financial
+
 
 def get_largest_perp_positions(vat: Vat):
     top_positions: list[Any] = []

@@ -22,7 +22,7 @@ construct==2.10.68
 construct-typing==0.5.3
 Deprecated==1.2.14
 dnspython==2.2.1
-driftpy==0.7.59
+driftpy==0.7.64
 Events==0.5
 exceptiongroup==1.0.4
 flake8==6.0.0
@@ -36,7 +36,7 @@ httpcore==0.16.3
 httpx==0.23.1
 idna==3.4
 iniconfig==1.1.1
-Jinja2==3.0.3
+jinja2==3.1.2
 jito_searcher_client==0.1.4
 jsonalias==0.1.1
 jsonrpcclient==4.0.2
