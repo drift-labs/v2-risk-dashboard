@@ -30,30 +30,35 @@ def generate_summary_data(
     df: pd.DataFrame, mode: int, perp_market_index: int
 ) -> pd.DataFrame:
     summary_data = {}
-    for i in range(len(mainnet_spot_market_configs)):
+    for market in mainnet_spot_market_configs:
+        i = market.market_index
         prefix = f"spot_{i}"
-        assets = df[f"{prefix}_all_assets"].sum()
-        liabilities = df[f"{prefix}_all"].sum()
+        try:
+            assets = df[f"{prefix}_all_assets"].sum()
+            liabilities = df[f"{prefix}_all"].sum()
 
-        summary_data[f"spot{i}"] = {
-            "all_assets": assets,
-            "all_liabilities": format_metric(
-                liabilities, 0 < liabilities < 1_000_000, mode, financial=True
-            ),
-            "effective_leverage": format_metric(
-                calculate_effective_leverage(assets, liabilities),
-                0 < calculate_effective_leverage(assets, liabilities) < 2,
-                mode,
-            ),
-            "all_spot": df[f"{prefix}_all_spot"].sum(),
-            "all_perp": df[f"{prefix}_all_perp"].sum(),
-            f"perp_{perp_market_index}_long": df[
-                f"{prefix}_perp_{perp_market_index}_long"
-            ].sum(),
-            f"perp_{perp_market_index}_short": df[
-                f"{prefix}_perp_{perp_market_index}_short"
-            ].sum(),
-        }
+            summary_data[f"spot{i}"] = {
+                "all_assets": assets,
+                "all_liabilities": format_metric(
+                    liabilities, 0 < liabilities < 1_000_000, mode, financial=True
+                ),
+                "effective_leverage": format_metric(
+                    calculate_effective_leverage(assets, liabilities),
+                    0 < calculate_effective_leverage(assets, liabilities) < 2,
+                    mode,
+                ),
+                "all_spot": df[f"{prefix}_all_spot"].sum(),
+                "all_perp": df[f"{prefix}_all_perp"].sum(),
+                f"perp_{perp_market_index}_long": df[
+                    f"{prefix}_perp_{perp_market_index}_long"
+                ].sum(),
+                f"perp_{perp_market_index}_short": df[
+                    f"{prefix}_perp_{perp_market_index}_short"
+                ].sum(),
+            }
+        except KeyError as e:
+            print(f"Warning: Missing data for market {i} ({market.symbol}): {e}")
+            continue
     return pd.DataFrame(summary_data).T
 
 
@@ -82,27 +87,50 @@ def asset_liab_matrix_cached_page():
     )
     st.query_params.update({"perp_market_index": str(perp_market_index)})
 
-    result = api2(
-        "asset-liability/matrix",
-        _params={"mode": mode, "perp_market_index": perp_market_index},
-        key=f"asset-liability/matrix_{mode}_{perp_market_index}",
-    )
+    try:
+        result = api2(
+            "asset-liability/matrix",
+            _params={"mode": mode, "perp_market_index": perp_market_index},
+            key=f"asset-liability/matrix_{mode}_{perp_market_index}",
+        )
+    except Exception as e:
+        st.error(f"Failed to fetch data: {str(e)}")
+        return
+
+    if not isinstance(result, dict) or "df" not in result:
+        st.error("Invalid response format from API")
+        return
+
     df = pd.DataFrame(result["df"])
+    if df.empty:
+        st.warning("No data available for the selected parameters")
+        return
 
     if st.session_state.only_high_leverage_mode_users:
-        df = df[df["is_high_leverage"]]
+        if "is_high_leverage" not in df.columns:
+            st.error("High leverage mode data is not available")
+            st.session_state.only_high_leverage_mode_users = False
+        else:
+            df = df[df["is_high_leverage"]]
 
     filtered_df = df[df["leverage"] >= st.session_state.min_leverage].sort_values(
         "leverage", ascending=False
     )
 
     summary_df = generate_summary_data(filtered_df, mode, perp_market_index)
-    slot = result["slot"]
-    current_slot = get_current_slot()
+    
+    # Get slot information if available
+    slot = result.get("slot")
+    if slot is not None:
+        try:
+            current_slot = get_current_slot()
+            st.info(
+                f"This data is for slot {slot}, which is now {int(current_slot) - int(slot)} slots old"
+            )
+        except Exception as e:
+            print(f"Error getting current slot: {e}")
+            # Continue without showing slot information
 
-    st.info(
-        f"This data is for slot {slot}, which is now {int(current_slot) - int(slot)} slots old"
-    )
     st.write(f"{df.shape[0]} users")
     st.checkbox(
         "Only show high leverage mode users", key="only_high_leverage_mode_users"
@@ -132,16 +160,37 @@ def asset_liab_matrix_cached_page():
         st.write(f"Total liabilities: **{filtered_df['spot_liability'].sum():,.2f}**")
         st.dataframe(filtered_df, hide_index=True)
 
-    for idx, tab in enumerate(tabs[1:]):
-        important_cols = [x for x in filtered_df.columns if "spot_" + str(idx) in x]
+    for idx, tab in enumerate(tabs[1:], 1):
+        market = mainnet_spot_market_configs[idx - 1]
+        market_index = market.market_index
+        prefix = f"spot_{market_index}"
+        
+        # Check if the required columns exist
+        required_cols = [f"{prefix}_all", f"{prefix}_all_assets", f"{prefix}_all_perp", f"{prefix}_all_spot"]
+        if not all(col in filtered_df.columns for col in required_cols):
+            tab.warning(f"No data available for {market.symbol} (market index {market_index})")
+            continue
 
+        important_cols = [x for x in filtered_df.columns if prefix in x]
+        
         toshow = filtered_df[
             ["user_key", "spot_asset", "net_usd_value"] + important_cols
         ]
-        toshow = toshow[toshow[important_cols].abs().sum(axis=1) != 0].sort_values(
-            by="spot_" + str(idx) + "_all", ascending=False
-        )
-        tab.write(
-            f"{len(toshow)} users with this asset to cover liabilities (with {st.session_state.min_leverage}x leverage or more)"
-        )
-        tab.dataframe(toshow, hide_index=True)
+        
+        # Filter rows where any of the market-specific columns have non-zero values
+        non_zero_mask = toshow[important_cols].abs().sum(axis=1) != 0
+        toshow = toshow[non_zero_mask]
+        
+        if len(toshow) > 0:
+            # Sort by the 'all' column if it exists, otherwise don't sort
+            try:
+                toshow = toshow.sort_values(by=f"{prefix}_all", ascending=False)
+            except KeyError:
+                pass  # Skip sorting if column doesn't exist
+            
+            tab.write(
+                f"{len(toshow)} users with this asset to cover liabilities (with {st.session_state.min_leverage}x leverage or more)"
+            )
+            tab.dataframe(toshow, hide_index=True)
+        else:
+            tab.info("No users found with non-zero positions in this market")
