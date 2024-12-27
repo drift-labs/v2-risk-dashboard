@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile-backend
+    ports:
+      - "8000:8000"
+    container_name: app-backend
+    volumes:
+      - ./logs:/logs
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile-frontend
+    ports:
+      - "8501:8501"
+    container_name: app-frontend
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://app-backend:8000
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,6 @@
+driftpy==0.7.99
+fastapi==0.115.0
+httpx==0.23.1
+httpcore==0.16.3
+packaging==23.1
+uvicorn==0.31.0 

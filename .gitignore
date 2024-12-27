@@ -3,7 +3,11 @@ venv
 **/__pycache__/
 .env
 .venv
+.venv-risk
 pickles/*
 cache
 ignore
 ucache
+matrix_response.json
+logs/*
+.DS_Store

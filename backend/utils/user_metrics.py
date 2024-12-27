@@ -1,17 +1,20 @@
 import copy
 import functools
-from typing import List, Optional
+import logging
+from typing import List, Optional, Dict, Any
 
 from driftpy.accounts.cache import DriftClientCache
 from driftpy.constants.numeric_constants import MARGIN_PRECISION, QUOTE_PRECISION
 from driftpy.constants.perp_markets import mainnet_perp_market_configs
 from driftpy.constants.spot_markets import mainnet_spot_market_configs
+from driftpy.constants import BASE_PRECISION
 from driftpy.drift_client import DriftClient
 from driftpy.drift_user import DriftUser
 from driftpy.math.margin import MarginCategory
 from driftpy.types import OraclePriceData
 from driftpy.user_map.user_map import UserMap
 
+logger = logging.getLogger(__name__)
 
 def get_init_health(user: DriftUser):
     """
@@ -217,23 +220,91 @@ def calculate_leverages_for_price_shock(
     ]
 
 
-def get_user_leverages_for_asset_liability(user_map: UserMap):
-    user_keys = list(user_map.user_map.keys())
-    user_values = list(user_map.values())
-
-    leverages_none = calculate_leverages_for_asset_liability(user_values, None)
-    leverages_initial = calculate_leverages_for_asset_liability(
-        user_values, MarginCategory.INITIAL
-    )
-    leverages_maintenance = calculate_leverages_for_asset_liability(
-        user_values, MarginCategory.MAINTENANCE
-    )
-    return {
-        "leverages_none": leverages_none,
-        "leverages_initial": leverages_initial,
-        "leverages_maintenance": leverages_maintenance,
-        "user_keys": user_keys,
-    }
+def get_user_leverages_for_asset_liability(users: UserMap) -> Dict[str, Any]:
+    """
+    Calculate user leverages for asset liability matrix.
+    """
+    try:
+        # Get user keys safely
+        user_keys = []
+        if hasattr(users, 'users'):
+            for user_key in users.users:
+                user_keys.append(user_key)
+        elif hasattr(users, 'user_map'):
+            for user_key in users.user_map:
+                user_keys.append(user_key)
+        
+        # Initialize result arrays
+        leverages_none = []
+        leverages_initial = []
+        leverages_maintenance = []
+        
+        # Process each user
+        for user_key in user_keys:
+            try:
+                user = users.users[user_key] if hasattr(users, 'users') else users.user_map[user_key]
+                
+                # Get user metrics
+                spot_asset = user.get_total_spot_value(MarginCategory.MAINTENANCE)
+                spot_liability = user.get_total_spot_liability_value(MarginCategory.MAINTENANCE)
+                perp_liability = user.get_total_perp_liability_value(MarginCategory.MAINTENANCE)
+                
+                # Calculate health
+                health = user.get_health(MarginCategory.MAINTENANCE)
+                
+                # Get net values
+                net_v = {}
+                net_p = {}
+                
+                # Get spot market values
+                for market_index in range(100):  # Assuming max 100 markets
+                    try:
+                        value = user.get_spot_market_asset_value(market_index, MarginCategory.MAINTENANCE)
+                        if value > 0:
+                            net_v[market_index] = value
+                    except:
+                        continue
+                
+                # Get perp market values
+                for market_index in range(100):  # Assuming max 100 markets
+                    try:
+                        perp_position = user.get_perp_position(market_index)
+                        if perp_position:
+                            net_p[market_index] = perp_position.base_asset_amount / BASE_PRECISION
+                    except:
+                        continue
+                
+                # Create user data
+                user_data = {
+                    "user_key": user_key,
+                    "spot_asset": spot_asset,
+                    "spot_liability": spot_liability,
+                    "perp_liability": perp_liability,
+                    "health": health,
+                    "net_v": net_v,
+                    "net_p": net_p,
+                }
+                
+                # Add to appropriate arrays
+                leverages_none.append(user_data)
+                if health <= 10:
+                    leverages_initial.append(user_data)
+                    leverages_maintenance.append(user_data)
+                
+            except Exception as e:
+                logger.error(f"Error processing user {user_key}: {str(e)}")
+                continue
+        
+        return {
+            "user_keys": user_keys,
+            "leverages_none": leverages_none,
+            "leverages_initial": leverages_initial,
+            "leverages_maintenance": leverages_maintenance,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in get_user_leverages_for_asset_liability: {str(e)}")
+        return None
 
 
 def get_user_leverages_for_price_shock(

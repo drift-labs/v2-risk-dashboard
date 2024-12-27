@@ -9,3 +9,6 @@ gatherUsageStats = false
 
 [client]
 toolbarMode = "minimal"
+showCallbackWarning = false
+showCachedResourceWarning = false
+showStatusIndicator = false
