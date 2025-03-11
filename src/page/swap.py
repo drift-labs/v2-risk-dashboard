@@ -38,6 +38,56 @@ def show():
             "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
             "decimals": 6,
             "symbol": "USDC"
+                    },
+        "mSOL": {
+            "mint": "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",
+            "decimals": 9,
+            "symbol": "mSOL"
+        },
+        "wBTC": {
+            "mint": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",
+            "decimals": 8,
+            "symbol": "wBTC"
+        },
+        "wETH": {
+            "mint": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+            "decimals": 18,
+            "symbol": "wETH"
+        },
+        "bSOL": {
+            "mint": "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1",
+            "decimals": 9,
+            "symbol": "bSOL"
+        },
+        "JTO": {
+            "mint": "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL",
+            "decimals": 6,
+            "symbol": "JTO"
+        },
+        "DRIFT": {
+            "mint": "DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7",
+            "decimals": 6,
+            "symbol": "DRIFT"
+        },
+        "USDY": {
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "decimals": 6,
+            "symbol": "USDY"
+        },
+        "USDS": {
+            "mint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+            "decimals": 6,
+            "symbol": "USDS"
+        },
+        "CLOUD": {
+            "mint": "CLoUDKc4Ane7HeQcPpE3YHnznRxhMimJ4MyaUqyHFzAu",
+            "decimals": 9,
+            "symbol": "CLOUD"
+        },
+        "PYUSD": {
+            "mint": "GyyHYVCrZGc2AQPuvNbcP1babmU3L42ptmxZthUfD9q",
+            "decimals": 6,
+            "symbol": "PYUSD"
         }
     }
     
