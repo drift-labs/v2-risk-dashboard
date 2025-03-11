@@ -1,4 +1,8 @@
 import os
+import sys
+
+# Add the parent directory to the Python path so we can import 'shared'
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -13,6 +17,7 @@ from page.orderbook import orderbook_page
 from page.pnl import pnl_page
 from page.price_shock import price_shock_cached_page
 from page.welcome import welcome_page
+from page.swap import show as swap_page
 
 load_dotenv()
 
@@ -39,6 +44,12 @@ if __name__ == "__main__":
             url_path="welcome",
             title="Welcome",
             icon="🏠",
+        ),
+        st.Page(
+            swap_page,
+            url_path="swap",
+            title="Swap",
+            icon="🔄",
         ),
         st.Page(
             orderbook_page,
