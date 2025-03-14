@@ -71,18 +71,13 @@ def deposits_page():
             step=0.1,
         )
 
-    # Filter dataframe based on minimum balance
-    filtered_df = df[df["balance"] >= min_balance]
-
-    st.write(f"Total deposits value: **${filtered_df['value'].sum():,.2f}**")
-    st.write(f"Number of depositors: **{len(filtered_df):,}**")
-    st.write(
-        f"Total number of deposited {mainnet_spot_market_configs[market_index].symbol}: **{total_number_of_deposited:,.0f}**"
-    )
-
     tabs = st.tabs(["By Position", "By Authority"])
 
     with tabs[0]:
+        filtered_df = df[df["balance"] >= min_balance]
+        st.write(f"Total deposits value: **${filtered_df['value'].sum():,.2f}**")
+        st.write(f"Number of depositor user accounts: **{len(filtered_df):,}**")
+
         csv = filtered_df.to_csv(index=False)
         st.download_button(
             "Download All Deposits CSV",
@@ -119,12 +114,14 @@ def deposits_page():
         )
 
     with tabs[1]:
-        # Add download button for grouped deposits
         grouped_df = (
-            filtered_df.groupby("authority")
+            df.groupby("authority")
             .agg({"value": "sum", "balance": "sum", "user_account": "count"})
             .reset_index()
         )
+        grouped_df = grouped_df[grouped_df["value"] >= min_balance]
+        st.write(f"Total deposits value: **${grouped_df['value'].sum():,.2f}**")
+        st.write(f"Total number of authorities with deposits: **{len(grouped_df):,}**")
         grouped_df = grouped_df.rename(columns={"user_account": "num_accounts"})
         grouped_df = grouped_df.sort_values("value", ascending=False)
         grouped_df.drop(columns=["balance"], inplace=True)
