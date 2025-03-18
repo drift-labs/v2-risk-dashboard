@@ -373,3 +373,60 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest):
     }
 
     return data
+
+@router.get("/largest_spot_borrow_per_market")
+def get_largest_spot_borrow_per_market(request: BackendRequest):
+    """
+    Get the largest spot borrowing position for each market index.
+
+    This endpoint retrieves the single largest spot borrowing position for each market,
+    calculated based on the current market prices.
+
+    Returns:
+        dict: A dictionary containing lists of data for the largest borrow per market:
+        - Market Index (list[int]): The market indices
+        - Value (list[str]): The formatted dollar values of the borrows
+        - Scaled Balance (list[str]): The formatted scaled balances of the borrows
+        - Public Key (list[str]): The public keys of the borrowers
+    """
+    vat: Vat = request.state.backend_state.vat
+    # Dictionary to track largest borrow per market
+    market_largest_borrows: dict[int, tuple[float, str, int, float]] = {}
+
+    for user in vat.users.values():
+        for position in user.get_user_account().spot_positions:
+            if position.scaled_balance > 0 and is_variant(
+                position.balance_type, "Borrow"
+            ):
+                market_price = vat.spot_oracles.get(position.market_index)
+                if market_price is not None:
+                    market_price_ui = market_price.price / PRICE_PRECISION
+                    borrow_value = (
+                        position.scaled_balance / SPOT_BALANCE_PRECISION
+                    ) * market_price_ui
+                    borrow_item = (
+                        to_financial(borrow_value),
+                        user.user_public_key,
+                        position.market_index,
+                        position.scaled_balance / SPOT_BALANCE_PRECISION,
+                    )
+
+                    # Update if this is the largest borrow for this market
+                    if (position.market_index not in market_largest_borrows or
+                        borrow_value > market_largest_borrows[position.market_index][0]):
+                        market_largest_borrows[position.market_index] = borrow_item
+
+    # Convert to list and sort by market index
+    borrows = sorted(
+        market_largest_borrows.values(),
+        key=lambda x: x[2]  # Sort by market index
+    )
+
+    data = {
+        "Market Index": [pos[2] for pos in borrows],
+        "Value": [f"${pos[0]:,.2f}" for pos in borrows],
+        "Scaled Balance": [f"{pos[3]:,.2f}" for pos in borrows],
+        "Public Key": [pos[1] for pos in borrows],
+    }
+
+    return data
