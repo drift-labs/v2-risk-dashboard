@@ -18,6 +18,7 @@ from page.pnl import pnl_page
 from page.price_shock import price_shock_cached_page
 from page.welcome import welcome_page
 from page.swap import show as swap_page
+from page.market_details import market_details_page
 
 load_dotenv()
 
@@ -87,7 +88,18 @@ if __name__ == "__main__":
             title="Deposits",
             icon="💰",
         ),
-        st.Page(needs_backend(pnl_page), url_path="pnl", title="PnL", icon="💹"),
+        st.Page(
+            market_details_page,
+            url_path="market-details",
+            title="Market Details",
+            icon="🔎",
+        ),
+        st.Page(
+            needs_backend(pnl_page),
+            url_path="pnl",
+            title="PnL",
+            icon="💹",
+        ),
     ]
 
     if os.getenv("DEV"):
