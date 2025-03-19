@@ -84,7 +84,42 @@ def extract_nested_attribute(market_data, attr_path: str):
         current = getattr(current, part)
     return current
 
-def display_attribute(market_data, attr_path: str):
+def get_debug_info(attr_path: str, val) -> list[str]:
+    """Get detailed debug information for any attribute value."""
+    debug_info = [
+        f"{attr_path} (debug):",
+        f"  • raw value: {val}",
+        f"  • type: {type(val)}",
+        f"  • dir: {dir(val)}",
+        f"  • repr: {repr(val)}",
+        f"  • str: {str(val)}",
+        f"  • has __dict__: {hasattr(val, '__dict__')}",
+        f"  • has kind: {hasattr(val, 'kind')}"
+    ]
+    
+    if hasattr(val, '__dict__'):
+        debug_info.append(f"  • __dict__: {val.__dict__}")
+    if hasattr(val, 'kind'):
+        debug_info.append(f"  • kind value: {val.kind}")
+    if hasattr(val, '__class__'):
+        debug_info.append(f"  • class name: {val.__class__.__name__}")
+        debug_info.append(f"  • class module: {val.__class__.__module__}")
+        
+    return debug_info
+
+def is_sumtype(val):
+    """Check if a value is a sumtype instance (like asset_tier, oracle_source, etc.)"""
+    return (hasattr(val, '__class__') and 
+            hasattr(val.__class__, '__module__') and 
+            'sumtypes' in val.__class__.__module__)
+
+def get_sumtype_variant_name(val):
+    """Extract the variant name from a sumtype value"""
+    if is_sumtype(val):
+        return val.__class__.__name__
+    return None
+
+def display_attribute(market_data, attr_path: str, debug_mode: bool = False):
     """
     Return a string that nicely formats the nested attribute for display.
     """
@@ -92,12 +127,21 @@ def display_attribute(market_data, attr_path: str):
     if val is None:
         return f"{attr_path}: N/A"
 
+    # If in debug mode, return detailed debug information
+    if debug_mode:
+        return "\n".join(get_debug_info(attr_path, val))
+
     # Special handling for name fields
     if "name" in attr_path.lower() and isinstance(val, list):
         # Attempt to interpret as bytes
         val = format_market_name(val)
         return f"{attr_path}: {val}"
-
+    
+    # Handle sumtypes generically
+    if is_sumtype(val):
+        variant_name = get_sumtype_variant_name(val)
+        return f"{attr_path}: {variant_name}"
+        
     # If it's a Pubkey or similar
     if hasattr(val, '__class__') and val.__class__.__name__ == 'Pubkey':
         return f"{attr_path}: {format_pubkey(val)}"
@@ -111,8 +155,94 @@ def display_attribute(market_data, attr_path: str):
         if any(x in attr_path.lower() for x in ["price", "amount", "balance"]):
             return f"{attr_path}: {format_number(val, 6)}"
 
+    # Handle complex objects (dataclasses, etc.)
+    if (hasattr(val, '__class__') 
+        and not isinstance(val, (str, int, float, bool, list, dict))
+        and hasattr(val, '__dict__')):
+        # This is likely a complex object with attributes
+        return format_complex_object(attr_path, val)
+
     # Default formatting
     return f"{attr_path}: {str(val)}"
+
+def format_complex_object(attr_name, obj):
+    """
+    Format a complex object (like a dataclass) by extracting and displaying
+    its attributes in an indented, readable format.
+    """
+    result = [f"{attr_name}:"]
+    
+    # Handle sumtypes generically in complex objects
+    if is_sumtype(obj):
+        variant_name = get_sumtype_variant_name(obj)
+        result = [f"{attr_name}: {variant_name}"]
+        return "\n".join(result)
+    
+    # Special handling for enum objects
+    if hasattr(obj, "kind"):
+        enum_kind = obj.kind
+        result.append(f"  • kind: {enum_kind}")
+        
+        # Add any additional attributes specific to this variant
+        if hasattr(obj, enum_kind) and getattr(obj, enum_kind) is not None:
+            variant_data = getattr(obj, enum_kind)
+            result.append(f"  • {enum_kind}: {variant_data}")
+            
+        # Add any other attributes
+        for attr_name in dir(obj):
+            if (not attr_name.startswith("_") and 
+                attr_name != "kind" and 
+                attr_name != enum_kind and
+                not callable(getattr(obj, attr_name))):
+                attr_val = getattr(obj, attr_name)
+                # Format the value appropriately
+                if isinstance(attr_val, (int, float)) and any(x in attr_name.lower() for x in ["price", "amount", "balance"]):
+                    formatted_value = format_number(attr_val, 6)
+                elif hasattr(attr_val, '__class__') and attr_val.__class__.__name__ == 'Pubkey':
+                    formatted_value = format_pubkey(attr_val)
+                else:
+                    formatted_value = str(attr_val)
+                result.append(f"  • {attr_name}: {formatted_value}")
+                
+        return "\n".join(result)
+    
+    # Get all attributes of the object
+    attributes = {}
+    
+    # Try to get dataclass fields first
+    if hasattr(obj, '__dataclass_fields__'):
+        attributes = {field: getattr(obj, field) for field in obj.__dataclass_fields__}
+    # Fallback to __dict__ for regular objects
+    elif hasattr(obj, '__dict__'):
+        attributes = obj.__dict__
+    
+    # Format each attribute
+    for name, value in sorted(attributes.items()):
+        # Skip internal attributes
+        if name.startswith('_') or name == 'padding':
+            continue
+            
+        # Format value based on type
+        if isinstance(value, (int, float)) and any(x in name.lower() for x in ["price", "amount", "balance"]):
+            formatted_value = format_number(value, 6)
+        elif hasattr(value, '__class__') and value.__class__.__name__ == 'Pubkey':
+            formatted_value = format_pubkey(value)
+        elif (hasattr(value, '__class__') 
+              and not isinstance(value, (str, int, float, bool, list, dict))
+              and hasattr(value, '__dict__')):
+            # This is a nested complex object, format it recursively
+            nested_format = format_complex_object(name, value)
+            # Indent the nested format one level further
+            formatted_value = "\n    " + nested_format.replace("\n", "\n    ")
+            result.append(formatted_value)
+            continue
+        else:
+            formatted_value = str(value)
+            
+        # Add indented line
+        result.append(f"  • {name}: {formatted_value}")
+        
+    return "\n".join(result)
 
 
 # ---------------------------------------------------------
@@ -175,11 +305,28 @@ async def _fetch_market_maps():
 def market_inspector_page():
     st.title("Market Inspector")
 
+    # Add debug mode toggle in sidebar
+    with st.sidebar:
+        st.write("---")
+        st.write("Debug Options")
+        debug_mode = st.toggle("Enable Debug Mode", value=False, 
+                             help="Show detailed debug information for all attributes")
+
     # 1) Load the maps
     spot_market_map, perp_market_map = load_market_maps()
 
     # 2) Let user choose Spot or Perp
+    # Initialize previous market type in session state if not exists
+    if "previous_market_type" not in st.session_state:
+        st.session_state.previous_market_type = "Spot"  # Default value
+        
     market_type_choice = st.radio("Select Market Type:", ["Spot", "Perp"], horizontal=True)
+    
+    # Clear selections when switching market types
+    if market_type_choice != st.session_state.previous_market_type:
+        if "selected_attrs" in st.session_state:
+            st.session_state.selected_attrs = []
+        st.session_state.previous_market_type = market_type_choice
 
     if market_type_choice == "Spot":
         markets = sorted(spot_market_map.values(), key=lambda m: m.data.market_index)
@@ -199,10 +346,31 @@ def market_inspector_page():
 
     # 4) Let user pick which attributes to show (multi-select)
     st.write("Select which attributes you would like to see:")
+    
+    # Initialize session state for selected attributes if not exists
+    if "selected_attrs" not in st.session_state:
+        st.session_state.selected_attrs = []
+    
+    # Define callback functions for multiselect changes
+    def on_attribute_selection_change():
+        # No additional processing needed as the multiselect directly updates session_state
+        pass
+    
+    # Add Select All and Clear Selection buttons in columns
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Select All Attributes"):
+            st.session_state.selected_attrs = available_attrs
+    with col2:
+        if st.button("Clear Selection"):
+            st.session_state.selected_attrs = []
+    
+    # Use the session state directly with the key parameter instead of default + updating afterward
     selected_attrs = st.multiselect(
         "Attributes",
-        available_attrs,
-        default=[],
+        options=available_attrs,
+        key="selected_attrs",
+        on_change=on_attribute_selection_change,
     )
 
     # 5) Display results
@@ -215,6 +383,45 @@ def market_inspector_page():
 
     st.markdown("---")
     st.subheader("Selected Attributes:")
+    
+    # First, organize attributes to handle parent/child relationships
+    parent_attrs = set()
+    child_attrs = set()
+    
+    # Identify parent and child attributes
     for attr in selected_attrs:
-        line = display_attribute(selected_market.data, attr)
-        st.write(line)
+        if '.' in attr:
+            parent = attr.split('.')[0]
+            if parent in selected_attrs:
+                child_attrs.add(attr)
+            else:
+                parent_attrs.add(attr)
+        else:
+            parent_attrs.add(attr)
+    
+    # Display all attributes in code blocks with consistent formatting
+    # Only process parent attributes and child attributes whose parents aren't selected
+    for attr in sorted(parent_attrs):
+        val = extract_nested_attribute(selected_market.data, attr)
+        
+        if debug_mode:
+            # In debug mode, show debug info for all attributes
+            debug_info = get_debug_info(attr, val)
+            st.markdown(f"```\n" + "\n".join(debug_info) + "\n```")
+            continue
+            
+        # Check if this is a complex object that needs expanded display
+        is_complex = (hasattr(val, '__class__') 
+                    and not isinstance(val, (str, int, float, bool, list, dict))
+                    and hasattr(val, '__dict__')
+                    and not is_sumtype(val))  # Don't treat sumtypes as complex objects
+        
+        if is_complex:
+            # Format as a complex object with sub-attributes
+            formatted_output = format_complex_object(attr, val)
+            st.markdown(f"```\n{formatted_output}\n```")
+        else:
+            # Format simple attributes in the same style as complex ones for consistency
+            formatted_line = display_attribute(selected_market.data, attr)
+            # Wrap in code block
+            st.markdown(f"```\n{formatted_line}\n```")
