@@ -18,7 +18,7 @@ from page.pnl import pnl_page
 from page.price_shock import price_shock_cached_page
 from page.welcome import welcome_page
 from page.swap import show as swap_page
-from page.market_details import market_details_page
+from page.market_inspector import market_inspector_page
 
 load_dotenv()
 
@@ -39,13 +39,28 @@ if __name__ == "__main__":
     header()
     sidebar()
 
-    main_pages = [
+    if os.getenv("DEV"):
+        settings_pages = [
+            st.Page(
+                needs_backend(backend_page),
+                url_path="backend",
+                title="Control Backend",
+                icon="🧪",
+            )
+        ]
+    else:
+        settings_pages = []
+
+    welcome_pages = [
         st.Page(
             welcome_page,
             url_path="welcome",
             title="Welcome",
             icon="🏠",
         ),
+    ]
+
+    market_pages = [
         st.Page(
             swap_page,
             url_path="swap",
@@ -59,6 +74,21 @@ if __name__ == "__main__":
             icon="📈",
         ),
         st.Page(
+            market_inspector_page,
+            url_path="market-inspector", 
+            title="Market Inspector",
+            icon="🔎",
+        ),
+        st.Page(
+            needs_backend(deposits_page),
+            url_path="deposits",
+            title="Deposits",
+            icon="💰",
+        ),
+    ]
+
+    risk_pages = [
+        st.Page(
             needs_backend(health_page),
             url_path="health",
             title="Health",
@@ -71,28 +101,19 @@ if __name__ == "__main__":
             icon="💸",
         ),
         st.Page(
-            asset_liab_matrix_cached_page,
-            url_path="asset-liability-matrix",
-            title="Asset-Liability Matrix",
-            icon="📊",
-        ),
-        st.Page(
             needs_backend(liquidation_curves_page),
             url_path="liquidation-curves",
             title="Liquidation Curves",
             icon="🌊",
         ),
+    ]
+
+    analytics_pages = [
         st.Page(
-            needs_backend(deposits_page),
-            url_path="deposits",
-            title="Deposits",
-            icon="💰",
-        ),
-        st.Page(
-            market_details_page,
-            url_path="market-details",
-            title="Market Details",
-            icon="🔎",
+            asset_liab_matrix_cached_page,
+            url_path="asset-liability-matrix",
+            title="Asset-Liability Matrix",
+            icon="📊",
         ),
         st.Page(
             needs_backend(pnl_page),
@@ -102,19 +123,13 @@ if __name__ == "__main__":
         ),
     ]
 
-    if os.getenv("DEV"):
-        main_pages.append(
-            st.Page(
-                needs_backend(backend_page),
-                url_path="backend",
-                title="Control Backend",
-                icon="🧪",
-            )
-        )
-
     pg = st.navigation(
         {
-            "Main": main_pages,
+            "Welcome": welcome_pages,
+            "Markets": market_pages,
+            "Risk Management": risk_pages,
+            "Analytics": analytics_pages,
+            **({"Settings": settings_pages} if settings_pages else {}),
         }
     )
     pg.run()

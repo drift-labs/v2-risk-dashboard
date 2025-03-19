@@ -2,15 +2,16 @@ import os
 import asyncio
 import base58
 import streamlit as st
+import inspect
 
 from anchorpy import Wallet
 from dotenv import load_dotenv
 from driftpy.drift_client import DriftClient
 from driftpy.market_map.market_map import MarketMap
 from driftpy.market_map.market_map_config import MarketMapConfig, WebsocketConfig
-from driftpy.types import MarketType
+from driftpy.types import MarketType, PerpMarketAccount, SpotMarketAccount
 from solana.rpc.async_api import AsyncClient
-from solders.keypair import Keypair
+from solders.keypair import Keypair #type: ignore
 
 from driftpy.constants.spot_markets import mainnet_spot_market_configs
 from driftpy.constants.perp_markets import mainnet_perp_market_configs
@@ -31,59 +32,44 @@ def format_number(number: int, decimals=6) -> str:
     """Format large numbers for better readability."""
     return f"{number / (10 ** decimals):,.6f}"
 
+def get_all_attributes_from_class(cls):
+    """
+    Dynamically extract all attributes from a class (PerpMarketAccount or SpotMarketAccount)
+    including nested attributes.
+    Returns a list of attribute paths.
+    """
+    attrs = []
+    
+    # Get all class attributes (fields) from the dataclass
+    fields = getattr(cls, '__dataclass_fields__', {})
+    
+    # Add direct attributes
+    for field_name in fields.keys():
+        # Skip the padding field
+        if field_name == 'padding':
+            continue
+        attrs.append(field_name)
+    
+    # Add nested attributes for complex fields
+    for field_name in fields.keys():
+        # Check if this is a nested dataclass
+        if field_name in ['amm', 'historical_oracle_data', 'historical_index_data', 'insurance_claim', 'insurance_fund']:
+            nested_cls = fields[field_name].type
+            if hasattr(nested_cls, '__dataclass_fields__'):
+                nested_fields = getattr(nested_cls, '__dataclass_fields__', {})
+                for nested_field in nested_fields.keys():
+                    if nested_field != 'padding':
+                        attrs.append(f"{field_name}.{nested_field}")
+    
+    return attrs
+
 def get_perp_market_attributes():
-    """List out attributes from the old script for perpetual markets."""
-    base_attrs = [
-        "pubkey", "market_index", "name",
-        "status", "contract_type", "contract_tier",
-        "margin_ratio_initial", "margin_ratio_maintenance",
-        "imf_factor", "unrealized_pnl_imf_factor",
-        "liquidator_fee", "if_liquidation_fee",
-        "unrealized_pnl_initial_asset_weight", "unrealized_pnl_maintenance_asset_weight",
-        "number_of_users", "number_of_users_with_base",
-        "quote_spot_market_index", "fee_adjustment",
-        "paused_operations", "expiry_ts", "expiry_price",
-    ]
-    amm_attrs = [
-        "amm.oracle", "amm.base_asset_reserve", "amm.quote_asset_reserve",
-        "amm.sqrt_k", "amm.peg_multiplier", "amm.base_asset_amount_long",
-        "amm.base_asset_amount_short", "amm.base_asset_amount_with_amm",
-        "amm.last_funding_rate", "amm.last_funding_rate_ts", "amm.funding_period",
-        "amm.order_step_size", "amm.order_tick_size", "amm.min_order_size",
-        "amm.max_position_size", "amm.volume24h", "amm.oracle_source",
-        "amm.last_oracle_valid", "amm.base_spread", "amm.max_spread",
-    ]
-    insurance_attrs = [
-        "insurance_claim.quote_max_insurance", "insurance_claim.quote_settled_insurance",
-    ]
-    return base_attrs + amm_attrs + insurance_attrs
+    """Dynamically retrieve all attributes from PerpMarketAccount."""
+    return get_all_attributes_from_class(PerpMarketAccount)
 
 def get_spot_market_attributes():
-    """List out attributes from the old script for spot markets."""
-    base_attrs = [
-        "pubkey", "oracle", "mint", "vault", "name", "market_index",
-        "status", "asset_tier", "oracle_source", "decimals",
-        "initial_asset_weight", "maintenance_asset_weight",
-        "initial_liability_weight", "maintenance_liability_weight",
-        "imf_factor", "liquidator_fee", "if_liquidation_fee",
-        "deposit_balance", "borrow_balance", "total_spot_fee",
-        "total_social_loss", "total_quote_social_loss",
-        "withdraw_guard_threshold", "max_token_deposits",
-        "order_step_size", "order_tick_size", "min_order_size", "max_position_size",
-    ]
-    interest_attrs = [
-        "optimal_utilization", "optimal_borrow_rate", "max_borrow_rate",
-        "deposit_token_twap", "borrow_token_twap", "utilization_twap",
-    ]
-    oracle_attrs = [
-        "historical_oracle_data.last_oracle_price",
-        "historical_oracle_data.last_oracle_conf",
-        "historical_oracle_data.last_oracle_price_twap",
-    ]
-    insurance_attrs = [
-        "insurance_fund.total_shares", "insurance_fund.user_shares",
-    ]
-    return base_attrs + interest_attrs + oracle_attrs + insurance_attrs
+    """Dynamically retrieve all attributes from SpotMarketAccount."""
+    return get_all_attributes_from_class(SpotMarketAccount)
 
 def extract_nested_attribute(market_data, attr_path: str):
     """
@@ -186,8 +172,8 @@ async def _fetch_market_maps():
 # Main Page
 # ---------------------------------------------------------
 
-def market_details_page():
-    st.title("Market Details")
+def market_inspector_page():
+    st.title("Market Inspector")
 
     # 1) Load the maps
     spot_market_map, perp_market_map = load_market_maps()
