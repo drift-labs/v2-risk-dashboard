@@ -117,15 +117,20 @@ def get_account_health_distribution(request: BackendRequest):
 
 
 @router.get("/largest_perp_positions")
-def get_largest_perp_positions(request: BackendRequest):
+def get_largest_perp_positions(request: BackendRequest, number_of_positions: int, market_index: int = None):
     """
-    Get the top 10 largest perpetual positions by value.
+    Get the top N largest perpetual positions by value, optionally filtered by market index.
 
     This endpoint retrieves the largest perpetual positions across all users,
     calculated based on the current market prices.
 
+    Args:
+        request (BackendRequest): The backend request object
+        number_of_positions (int): Number of top positions to return
+        market_index (int, optional): Specific market index to filter by. Defaults to None.
+
     Returns:
-        dict: A dictionary containing lists of data for the top 10 positions:
+        dict: A dictionary containing lists of data for the top positions:
         - Market Index (list[int]): The market indices of the top positions
         - Value (list[str]): The formatted dollar values of the positions
         - Base Asset Amount (list[str]): The formatted base asset amounts
@@ -136,6 +141,10 @@ def get_largest_perp_positions(request: BackendRequest):
 
     for user in vat.users.values():
         for position in user.get_user_account().perp_positions:
+            # Skip if we're filtering by market_index and this doesn't match
+            if market_index is not None and position.market_index != market_index:
+                continue
+                
             if position.base_asset_amount > 0:
                 market_price = vat.perp_oracles.get(position.market_index)
                 if market_price is not None:
@@ -144,19 +153,21 @@ def get_largest_perp_positions(request: BackendRequest):
                         abs(position.base_asset_amount) / BASE_PRECISION
                     ) * market_price_ui
                     heap_item = (
-                        base_asset_value,
+                        -base_asset_value,  # Negate for min-heap to track largest values
                         user.user_public_key,
                         position.market_index,
                         position.base_asset_amount / BASE_PRECISION,
                     )
 
-                    if len(top_positions) < 10:
+                    if len(top_positions) < number_of_positions:
                         heapq.heappush(top_positions, heap_item)
                     else:
-                        heapq.heappushpop(top_positions, heap_item)
+                        # Only push if this value is larger than the smallest in our heap
+                        if heap_item[0] < top_positions[0][0]:  # Remember values are negated
+                            heapq.heappushpop(top_positions, heap_item)
 
     positions = sorted(
-        (value, pubkey, market_idx, amt)
+        (-value, pubkey, market_idx, amt)  # Un-negate the value for final sorting
         for value, pubkey, market_idx, amt in top_positions
     )
 

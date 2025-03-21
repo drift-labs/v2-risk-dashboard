@@ -1,12 +1,14 @@
 import plotly.express as px
 import streamlit as st
+import pandas as pd
 
 from lib.api import fetch_cached_data
 
 
 def health_cached_page():
     health_distribution = fetch_cached_data("health/health_distribution")
-    largest_perp_positions = fetch_cached_data("health/largest_perp_positions")
+    
+    # Fetch other data
     most_levered_positions = fetch_cached_data(
         "health/most_levered_perp_positions_above_1m"
     )
@@ -37,7 +39,34 @@ def health_cached_page():
 
     with perp_col:
         st.markdown("### **Largest perp positions:**")
-        st.dataframe(largest_perp_positions, hide_index=True)
+        
+        largest_perp_positions = fetch_cached_data(
+            "health/largest_perp_positions", 
+            {"number_of_positions": 100}
+        )
+        
+        # Convert to DataFrame and add pagination
+        df = pd.DataFrame(largest_perp_positions)
+        total_rows = len(df)
+        page_size = 10
+        total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
+        
+        if total_pages > 1:
+            page_number = st.number_input(
+                "Page", 
+                min_value=1, 
+                max_value=total_pages, 
+                value=1,
+                key="perp_positions_page"
+            )
+            start_idx = (page_number - 1) * page_size
+            end_idx = min(start_idx + page_size, total_rows)
+            
+            st.write(f"Showing positions {start_idx + 1}-{end_idx} of {total_rows}")
+            st.dataframe(df.iloc[start_idx:end_idx], hide_index=True)
+        else:
+            st.dataframe(df, hide_index=True)
+            
         st.markdown("### **Most levered perp positions > $1m:**")
         st.dataframe(most_levered_positions, hide_index=True)
 

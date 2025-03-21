@@ -39,13 +39,36 @@ def health_page():
     perp_col, spot_col = st.columns([1, 1])
 
     with perp_col:
+        st.markdown("### **Largest perp positions:**")
+        
         largest_perp_positions = fetch_api_data(
             "health",
             "largest_perp_positions",
+            params={"number_of_positions": 100},
             retry=True,
         )
-        st.markdown("### **Largest perp positions:**")
-        st.dataframe(pd.DataFrame(largest_perp_positions), hide_index=True)
+        
+        # Convert to DataFrame and add pagination
+        df = pd.DataFrame(largest_perp_positions)
+        total_rows = len(df)
+        page_size = 10
+        total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
+        
+        if total_pages > 1:
+            page_number = st.number_input(
+                "Page", 
+                min_value=1, 
+                max_value=total_pages, 
+                value=1,
+                key="perp_positions_page"
+            )
+            start_idx = (page_number - 1) * page_size
+            end_idx = min(start_idx + page_size, total_rows)
+            
+            st.write(f"Showing positions {start_idx + 1}-{end_idx} of {total_rows}")
+            st.dataframe(df.iloc[start_idx:end_idx], hide_index=True)
+        else:
+            st.dataframe(df, hide_index=True)
 
         most_levered_positions = fetch_api_data(
             "health",
