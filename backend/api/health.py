@@ -157,14 +157,14 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
                         if heap_item[0] < top_positions[0][0]:  # Remember values are negated
                             heapq.heappushpop(top_positions, heap_item)
 
-    positions = sorted(
-        (-value, pubkey, market_idx, amt)  # Un-negate the value for final sorting
-        for value, pubkey, market_idx, amt in top_positions
-    )
+    # Un-negate values and sort explicitly by value in descending order
+    positions = []
+    for value, pubkey, market_idx, amt in top_positions:
+        positions.append((-value, pubkey, market_idx, amt))
+    
+    # Ensure consistent sorting by explicitly sorting by value (first tuple element) in descending order
+    positions = sorted(positions, key=lambda x: x[0], reverse=True)
 
-    positions.reverse()
-
-    # Log statistics first
     logger.info(
         f"get_largest_perp_positions stats: "
         f"total_positions_checked={total_positions_checked}, "

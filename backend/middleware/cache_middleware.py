@@ -114,13 +114,16 @@ class CacheMiddleware(BaseHTTPMiddleware):
                     base_amounts = data.get("Base Asset Amount", [])
                     public_keys = data.get("Public Key", [])
                     
+                    # Log positions in the correct order (1 to N)
                     for idx in range(positions_returned):
                         market_idx = market_indices[idx] if idx < len(market_indices) else "N/A"
                         value = values[idx] if idx < len(values) else "N/A"
                         base_amt = base_amounts[idx] if idx < len(base_amounts) else "N/A"
                         pub_key = public_keys[idx] if idx < len(public_keys) else "N/A"
                         
-                        print(f"Position {idx + 1}:")
+                        # Positions are already sorted, so we can log them as is
+                        position_num = idx + 1
+                        print(f"Position {position_num}:")
                         print(f"    Market Index: {market_idx}")
                         print(f"    Value: {value}")
                         print(f"    Base Asset Amount: {base_amt}")
@@ -129,6 +132,26 @@ class CacheMiddleware(BaseHTTPMiddleware):
                     print("No positions found in cached response")
                     
                 print("======== END CACHED POSITIONS ========\n")
+                
+                # Also log to standard logger for Loki
+                logger = logging.getLogger("backend.api.health")
+                logger.info("[CACHED] BEGIN POSITION DETAILS ----------------------------------------")
+                for idx in range(positions_returned):
+                    market_idx = market_indices[idx] if idx < len(market_indices) else "N/A"
+                    value = values[idx] if idx < len(values) else "N/A"
+                    base_amt = base_amounts[idx] if idx < len(base_amounts) else "N/A"
+                    pub_key = public_keys[idx] if idx < len(public_keys) else "N/A"
+                    
+                    position_num = idx + 1
+                    logger.info(
+                        f"Position {position_num}:\n"
+                        f"    Market Index: {market_idx}\n"
+                        f"    Value: {value}\n"
+                        f"    Base Asset Amount: {base_amt}\n"
+                        f"    Public Key: {pub_key}"
+                    )
+                logger.info("[CACHED] END POSITION DETAILS ----------------------------------------")
+                
         except Exception as e:
             print(f"Error printing cached position details: {str(e)}")
             import traceback
