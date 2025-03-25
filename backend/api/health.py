@@ -1,4 +1,5 @@
 import heapq
+import logging
 
 import pandas as pd
 from driftpy.constants import BASE_PRECISION, PRICE_PRECISION, SPOT_BALANCE_PRECISION
@@ -9,6 +10,8 @@ from fastapi import APIRouter
 from backend.state import BackendRequest
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def to_financial(num: float):
@@ -118,29 +121,16 @@ def get_account_health_distribution(request: BackendRequest):
 
 @router.get("/largest_perp_positions")
 def get_largest_perp_positions(request: BackendRequest, number_of_positions: int, market_index: int = None):
-    """
-    Get the top N largest perpetual positions by value, optionally filtered by market index.
-
-    This endpoint retrieves the largest perpetual positions across all users,
-    calculated based on the current market prices.
-
-    Args:
-        request (BackendRequest): The backend request object
-        number_of_positions (int): Number of top positions to return
-        market_index (int, optional): Specific market index to filter by. Defaults to None.
-
-    Returns:
-        dict: A dictionary containing lists of data for the top positions:
-        - Market Index (list[int]): The market indices of the top positions
-        - Value (list[str]): The formatted dollar values of the positions
-        - Base Asset Amount (list[str]): The formatted base asset amounts
-        - Public Key (list[str]): The public keys of the position holders
-    """
+    logger.info(f"get_largest_perp_positions called with number_of_positions={number_of_positions}, market_index={market_index}")
+    
     vat: Vat = request.state.backend_state.vat
     top_positions: list[tuple[float, str, int, float]] = []
+    total_positions_checked = 0
+    positions_meeting_criteria = 0
 
     for user in vat.users.values():
         for position in user.get_user_account().perp_positions:
+            total_positions_checked += 1
             # Skip if we're filtering by market_index and this doesn't match
             if market_index is not None and position.market_index != market_index:
                 continue
@@ -148,6 +138,7 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
             if position.base_asset_amount > 0:
                 market_price = vat.perp_oracles.get(position.market_index)
                 if market_price is not None:
+                    positions_meeting_criteria += 1
                     market_price_ui = market_price.price / PRICE_PRECISION
                     base_asset_value = (
                         abs(position.base_asset_amount) / BASE_PRECISION
@@ -172,6 +163,26 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
     )
 
     positions.reverse()
+
+    # Log statistics first
+    logger.info(
+        f"get_largest_perp_positions stats: "
+        f"total_positions_checked={total_positions_checked}, "
+        f"positions_meeting_criteria={positions_meeting_criteria}, "
+        f"positions_returned={len(positions)}"
+    )
+
+    # Log each position individually with detailed information
+    logger.info("BEGIN POSITION DETAILS ----------------------------------------")
+    for idx, (value, pubkey, market_idx, amt) in enumerate(positions, 1):
+        logger.info(
+            f"Position {idx}:\n"
+            f"    Market Index: {market_idx}\n"
+            f"    Value: ${value:,.2f}\n"
+            f"    Base Asset Amount: {amt:,.2f}\n"
+            f"    Public Key: {pubkey}"
+        )
+    logger.info("END POSITION DETAILS ----------------------------------------")
 
     data = {
         "Market Index": [pos[2] for pos in positions],
