@@ -6,12 +6,51 @@ from lib.api import fetch_api_data
 
 
 def health_page():
+    """
+    Health page for viewing account health distribution and various largest positions.
+    Added a Debug Options toggle in the sidebar that, when enabled, displays additional
+    developer buttons: "Show Current Metadata", "List Available Pickles",
+    and "Force Refresh Pickle".
+    """
+    # Debug mode toggle in sidebar
+    with st.sidebar:
+        st.write("---")
+        st.write("Debug Options")
+        debug_mode = st.toggle(
+            "Enable Debug Mode",
+            value=False,
+            help="Show debugging features for the health page",
+        )
+
+    if debug_mode:
+        st.subheader("Developer Tools")
+        st.write("Use these buttons to inspect backend metadata and manage snapshots.")
+        col1, col2, col3 = st.columns(3)
+
+        # Show Current Metadata
+        if col1.button("Show Current Metadata"):
+            metadata_info = fetch_api_data("metadata", "", retry=True)
+            st.json(metadata_info)
+
+        # List Available Pickles
+        if col2.button("List Available Pickles"):
+            pickles = fetch_api_data("metadata", "list_pickles", retry=True)
+            st.write(pickles)
+
+        # Force Refresh Pickle
+        if col3.button("Force Refresh Pickle"):
+            refresh_resp = fetch_api_data("metadata", "force_refresh", retry=True)
+            st.json(refresh_resp)
+
+    # Main Health content
     st.markdown("# Health")
 
     st.markdown(
         """
-        Account health is a measure of the health of a user's account. It is calculated as the ratio of the user's collateral to the user's debt.
-        For more information about how account health is calculated, see [account health](https://docs.drift.trade/trading/account-health) in the docs.
+        Account health is a measure of the health of a user's account.
+        It is calculated as the ratio of the user's collateral to the user's debt.
+        For more information about how account health is calculated, see
+        [account health](https://docs.drift.trade/trading/account-health) in the docs.
         """
     )
     health_distribution = fetch_api_data(

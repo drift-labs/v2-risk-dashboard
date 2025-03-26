@@ -121,20 +121,35 @@ def get_account_health_distribution(request: BackendRequest):
 
 @router.get("/largest_perp_positions")
 def get_largest_perp_positions(request: BackendRequest, number_of_positions: int, market_index: int = None):
-    logger.info(f"get_largest_perp_positions called with number_of_positions={number_of_positions}, market_index={market_index}")
-    
+    """
+    Get the largest perp positions by notional value across all users or for a specific market if market_index is provided.
+    """
+    # Additional logging to help troubleshoot production vs. local differences
     vat: Vat = request.state.backend_state.vat
+    logger.info(
+        f"==> [largest_perp_positions] Called with number_of_positions={number_of_positions}, "
+        f"market_index={market_index}, current_pickle={request.state.backend_state.current_pickle_path}"
+    )
+    try:
+        user_count = sum(1 for _ in vat.users.values())
+        logger.info(f"==> [largest_perp_positions] # of loaded users: {user_count}")
+    except Exception as e:
+        logger.info(f"==> [largest_perp_positions] Unable to count users: {str(e)}")
+
     top_positions: list[tuple[float, str, int, float]] = []
     total_positions_checked = 0
     positions_meeting_criteria = 0
 
+    # Log the markets we have
+    logger.info(f"==> [largest_perp_positions] Available perp oracles: {list(vat.perp_oracles.keys())}")
+
     for user in vat.users.values():
         for position in user.get_user_account().perp_positions:
             total_positions_checked += 1
-            # Skip if we're filtering by market_index and this doesn't match
+            # Skip if we're filtering by market_index
             if market_index is not None and position.market_index != market_index:
                 continue
-                
+
             if position.base_asset_amount > 0:
                 market_price = vat.perp_oracles.get(position.market_index)
                 if market_price is not None:
@@ -144,7 +159,7 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
                         abs(position.base_asset_amount) / BASE_PRECISION
                     ) * market_price_ui
                     heap_item = (
-                        -base_asset_value,  # Negate for min-heap to track largest values
+                        -base_asset_value,  # Negate for min-heap
                         user.user_public_key,
                         position.market_index,
                         position.base_asset_amount / BASE_PRECISION,
@@ -153,36 +168,29 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
                     if len(top_positions) < number_of_positions:
                         heapq.heappush(top_positions, heap_item)
                     else:
-                        # Only push if this value is larger than the smallest in our heap
-                        if heap_item[0] < top_positions[0][0]:  # Remember values are negated
+                        # Only push if value is larger than the smallest
+                        if heap_item[0] < top_positions[0][0]:
                             heapq.heappushpop(top_positions, heap_item)
 
-    # Un-negate values and sort explicitly by value in descending order
+    # Convert negative values back
     positions = []
     for value, pubkey, market_idx, amt in top_positions:
         positions.append((-value, pubkey, market_idx, amt))
-    
-    # Ensure consistent sorting by explicitly sorting by value (first tuple element) in descending order
+
+    # Sort descending
     positions = sorted(positions, key=lambda x: x[0], reverse=True)
 
     logger.info(
-        f"get_largest_perp_positions stats: "
-        f"total_positions_checked={total_positions_checked}, "
-        f"positions_meeting_criteria={positions_meeting_criteria}, "
-        f"positions_returned={len(positions)}"
+        f"==> [largest_perp_positions] Stats => total_checked={total_positions_checked}, "
+        f"positions_meeting_criteria={positions_meeting_criteria}, positions_returned={len(positions)}"
     )
 
-    # Log each position individually with detailed information
-    logger.info("BEGIN POSITION DETAILS ----------------------------------------")
+    # Log each position
     for idx, (value, pubkey, market_idx, amt) in enumerate(positions, 1):
         logger.info(
-            f"Position {idx}:\n"
-            f"    Market Index: {market_idx}\n"
-            f"    Value: ${value:,.2f}\n"
-            f"    Base Asset Amount: {amt:,.2f}\n"
-            f"    Public Key: {pubkey}"
+            f"==> [largest_perp_positions] Position {idx}: Market Index={market_idx}, "
+            f"Value=${value:,.2f}, Base Asset Amount={amt:,.2f}, Public Key={pubkey}"
         )
-    logger.info("END POSITION DETAILS ----------------------------------------")
 
     data = {
         "Market Index": [pos[2] for pos in positions],
@@ -247,10 +255,8 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest):
                                 heapq.heappushpop(top_positions, heap_item)
 
     positions = sorted(
-        top_positions,  # We can sort directly the heap result
-        key=lambda x: x[
-            4
-        ],  # Sort by leverage, which is the fifth element in your tuple
+        top_positions,
+        key=lambda x: x[4],
     )
 
     positions.reverse()
@@ -396,6 +402,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest):
 
     return data
 
+
 @router.get("/largest_spot_borrow_per_market")
 def get_largest_spot_borrow_per_market(request: BackendRequest):
     """
@@ -412,7 +419,6 @@ def get_largest_spot_borrow_per_market(request: BackendRequest):
         - Public Key (list[str]): The public keys of the borrowers
     """
     vat: Vat = request.state.backend_state.vat
-    # Dictionary to track largest borrow per market
     market_largest_borrows: dict[int, tuple[float, str, int, float]] = {}
 
     for user in vat.users.values():
@@ -438,10 +444,9 @@ def get_largest_spot_borrow_per_market(request: BackendRequest):
                         borrow_value > market_largest_borrows[position.market_index][0]):
                         market_largest_borrows[position.market_index] = borrow_item
 
-    # Convert to list and sort by market index
     borrows = sorted(
         market_largest_borrows.values(),
-        key=lambda x: x[2]  # Sort by market index
+        key=lambda x: x[2]
     )
 
     data = {
