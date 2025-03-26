@@ -30,6 +30,9 @@ class CacheMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if not request.url.path.startswith("/api"):
             return await call_next(request)
+        # Skip caching for backend health check endpoints
+        if request.url.path == request.url.path.startswith("/api/backend-health"):
+            return await call_next(request)
 
         # Add special logging for largest_perp_positions endpoint
         is_perp_positions = request.url.path == "/api/health/largest_perp_positions"

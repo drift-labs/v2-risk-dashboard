@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from backend.api import (
     asset_liability,
+    backend_health,
     deposits,
     health,
     liquidation,
@@ -70,6 +71,7 @@ app.add_middleware(ReadinessMiddleware, state=state)
 app.add_middleware(CacheMiddleware, state=state, cache_dir="cache")
 
 app.include_router(health.router, prefix="/api/health", tags=["health"])
+app.include_router(backend_health.router, prefix="/api/backend-health", tags=["backend-health"])
 app.include_router(metadata.router, prefix="/api/metadata", tags=["metadata"])
 app.include_router(liquidation.router, prefix="/api/liquidation", tags=["liquidation"])
 app.include_router(price_shock.router, prefix="/api/price-shock", tags=["price-shock"])
