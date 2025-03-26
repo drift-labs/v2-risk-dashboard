@@ -80,10 +80,20 @@ def health_page():
     with perp_col:
         st.markdown("### **Largest perp positions:**")
         
+        # Add number input to control how many positions to show
+        num_positions = st.number_input(
+            "Number of values to return for perp positions",
+            min_value=10,
+            max_value=100,
+            value=10,
+            step=10,
+            key="num_perp_positions"
+        )
+        
         largest_perp_positions = fetch_api_data(
             "health",
             "largest_perp_positions",
-            params={"number_of_positions": 100},
+            params={"number_of_positions": num_positions},
             retry=True,
         )
         
