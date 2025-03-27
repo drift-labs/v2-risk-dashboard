@@ -26,12 +26,19 @@ class CacheMiddleware(BaseHTTPMiddleware):
             os.makedirs(self.ucache_dir)
 
     async def dispatch(self, request: BackendRequest, call_next: Callable):
+        # Skip caching for ucache and non-API endpoints
         if request.url.path.startswith("/api/ucache"):
             return await call_next(request)
         if not request.url.path.startswith("/api"):
             return await call_next(request)
-        # Skip caching for backend health check endpoints
-        if request.url.path == request.url.path.startswith("/api/backend-health"):
+            
+        # Skip caching for health check endpoints
+        if request.url.path == "/api/health/" or request.url.path.startswith("/api/backend-health"):
+            return await call_next(request)
+            
+        # Skip caching if bypass_cache=true is in the query parameters
+        if "bypass_cache=true" in request.url.query or "bypass_cache=True" in request.url.query:
+            logging.info(f"Bypassing cache for {request.url.path} due to bypass_cache parameter")
             return await call_next(request)
 
         # Add special logging for largest_perp_positions endpoint

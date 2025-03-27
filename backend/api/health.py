@@ -124,7 +124,6 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
     """
     Get the largest perp positions by notional value across all users or for a specific market if market_index is provided.
     """
-    # Additional logging to help troubleshoot production vs. local differences
     vat: Vat = request.state.backend_state.vat
     logger.info(
         f"==> [largest_perp_positions] Called with number_of_positions={number_of_positions}, "
@@ -136,7 +135,8 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
     except Exception as e:
         logger.info(f"==> [largest_perp_positions] Unable to count users: {str(e)}")
 
-    top_positions: list[tuple[float, str, int, float]] = []
+    # Collect all positions first
+    all_positions = []
     total_positions_checked = 0
     positions_meeting_criteria = 0
 
@@ -146,11 +146,12 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
     for user in vat.users.values():
         for position in user.get_user_account().perp_positions:
             total_positions_checked += 1
-            # Skip if we're filtering by market_index
+            # Skip if filtering by market_index
             if market_index is not None and position.market_index != market_index:
                 continue
 
-            if position.base_asset_amount > 0:
+            # Process all non-zero positions (both long and short)
+            if position.base_asset_amount != 0:
                 market_price = vat.perp_oracles.get(position.market_index)
                 if market_price is not None:
                     positions_meeting_criteria += 1
@@ -158,34 +159,24 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
                     base_asset_value = (
                         abs(position.base_asset_amount) / BASE_PRECISION
                     ) * market_price_ui
-                    heap_item = (
-                        -base_asset_value,  # Negate for min-heap
+                    
+                    # Store position info with actual value
+                    all_positions.append((
+                        base_asset_value,  # Actual value for sorting
                         user.user_public_key,
                         position.market_index,
-                        position.base_asset_amount / BASE_PRECISION,
-                    )
+                        position.base_asset_amount / BASE_PRECISION,  # Keep original sign for display
+                    ))
 
-                    if len(top_positions) < number_of_positions:
-                        heapq.heappush(top_positions, heap_item)
-                    else:
-                        # Only push if value is larger than the smallest
-                        if heap_item[0] < top_positions[0][0]:
-                            heapq.heappushpop(top_positions, heap_item)
-
-    # Convert negative values back
-    positions = []
-    for value, pubkey, market_idx, amt in top_positions:
-        positions.append((-value, pubkey, market_idx, amt))
-
-    # Sort descending
-    positions = sorted(positions, key=lambda x: x[0], reverse=True)
+    # Sort all positions by value (descending) and take top N
+    positions = sorted(all_positions, key=lambda x: x[0], reverse=True)[:number_of_positions]
 
     logger.info(
         f"==> [largest_perp_positions] Stats => total_checked={total_positions_checked}, "
         f"positions_meeting_criteria={positions_meeting_criteria}, positions_returned={len(positions)}"
     )
 
-    # Log each position
+    # Log each position with value and sign
     for idx, (value, pubkey, market_idx, amt) in enumerate(positions, 1):
         logger.info(
             f"==> [largest_perp_positions] Position {idx}: Market Index={market_idx}, "

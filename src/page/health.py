@@ -25,7 +25,7 @@ def health_page():
     if debug_mode:
         st.subheader("Developer Tools")
         st.write("Use these buttons to inspect backend metadata and manage snapshots.")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         # Show Current Metadata
         if col1.button("Show Current Metadata"):
@@ -41,6 +41,20 @@ def health_page():
         if col3.button("Force Refresh Pickle"):
             refresh_resp = fetch_api_data("metadata", "force_refresh", retry=True)
             st.json(refresh_resp)
+            
+        # Bypass Cache for Perp Positions
+        if col4.button("Refresh Perp Positions"):
+            st.info("Bypassing cache and fetching fresh data for largest perp positions...")
+            # Get the current number input value
+            num_positions = st.session_state.get("num_perp_positions", 10)
+            fresh_perp_positions = fetch_api_data(
+                "health",
+                "largest_perp_positions",
+                params={"number_of_positions": num_positions, "bypass_cache": "true"},
+                retry=True,
+            )
+            st.dataframe(pd.DataFrame(fresh_perp_positions), hide_index=True)
+            st.success("Successfully fetched fresh data (bypassed cache)")
 
     # Main Health content
     st.markdown("# Health")
@@ -90,10 +104,23 @@ def health_page():
             key="num_perp_positions"
         )
         
+        # Add bypass cache toggle when in debug mode
+        bypass_cache = False
+        if debug_mode:
+            bypass_cache = st.toggle(
+                "Bypass cache for perp positions",
+                value=False,
+                help="When enabled, the API will bypass the cache and fetch fresh data directly",
+                key="bypass_perp_cache"
+            )
+        
         largest_perp_positions = fetch_api_data(
             "health",
             "largest_perp_positions",
-            params={"number_of_positions": num_positions},
+            params={
+                "number_of_positions": num_positions,
+                "bypass_cache": "true" if bypass_cache else "false"
+            },
             retry=True,
         )
         
