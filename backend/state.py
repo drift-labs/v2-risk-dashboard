@@ -37,6 +37,12 @@ class BackendState:
     last_oracle_slot: int
     vat: Vat
     ready: bool
+    
+    def __init__(self):
+        """Initialize critical attributes with default values to prevent access errors"""
+        self.ready = False
+        self.current_pickle_path = "bootstrap"
+        self.last_oracle_slot = 0
 
     def initialize(
         self, url: str

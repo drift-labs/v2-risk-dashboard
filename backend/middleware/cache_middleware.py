@@ -46,6 +46,11 @@ class CacheMiddleware(BaseHTTPMiddleware):
         if is_perp_positions:
             logging.info(f"Processing request for largest_perp_positions with query: {request.url.query}")
 
+        # Defensive check to ensure state is initialized
+        if not hasattr(self.state, 'current_pickle_path') or self.state.current_pickle_path is None:
+            logging.error(f"State not properly initialized, missing current_pickle_path. Bypassing cache for {request.url.path}")
+            return await call_next(request)
+            
         current_pickle = self.state.current_pickle_path
         previous_pickles = self._get_previous_pickles(4)  # Get last 4 pickles
 
@@ -301,6 +306,11 @@ class CacheMiddleware(BaseHTTPMiddleware):
 
     def _get_previous_pickles(self, num_pickles: int = 4) -> List[str]:
         logging.info(f"Attempting to get previous {num_pickles} pickles")
+        # Defensive check for current_pickle_path
+        if not hasattr(self.state, 'current_pickle_path') or self.state.current_pickle_path is None:
+            logging.error("Cannot get previous pickles: current_pickle_path is not initialized")
+            return []
+            
         _pickle_paths = glob.glob(f"{self.state.current_pickle_path}/../*")
         pickle_paths = sorted(
             [os.path.realpath(dir) for dir in _pickle_paths], reverse=True
