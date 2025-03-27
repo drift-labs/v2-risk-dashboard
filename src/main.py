@@ -2,7 +2,7 @@ import os
 import sys
 
 # Add the parent directory to the Python path so we can import 'shared'
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -13,12 +13,13 @@ from page.backend import backend_page
 from page.deposits import deposits_page
 from page.health import health_page
 from page.liquidation_curves import liquidation_curves_page
+from page.market_inspector import market_inspector_page
 from page.orderbook import orderbook_page
 from page.pnl import pnl_page
 from page.price_shock import price_shock_cached_page
-from page.welcome import welcome_page
 from page.swap import show as swap_page
-from page.market_inspector import market_inspector_page
+from page.vaults import vaults_page
+from page.welcome import welcome_page
 
 load_dotenv()
 
@@ -75,7 +76,7 @@ if __name__ == "__main__":
         ),
         st.Page(
             market_inspector_page,
-            url_path="market-inspector", 
+            url_path="market-inspector",
             title="Market Inspector",
             icon="🔎",
         ),
@@ -120,6 +121,12 @@ if __name__ == "__main__":
             url_path="pnl",
             title="PnL",
             icon="💹",
+        ),
+        st.Page(
+            needs_backend(vaults_page),
+            url_path="vaults",
+            title="Vaults",
+            icon="🏦",
         ),
     ]
 
