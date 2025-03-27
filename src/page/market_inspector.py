@@ -380,13 +380,14 @@ def market_inspector_page():
         st.info("Please select at least one attribute to display.")
         with st.expander("All markets"):
             st.write("Perp markets:")
-            st.write(pd.concat(
-                [pd.DataFrame(serialize_perp_market(x.data)).T for x in sorted(perp_market_map.values(), key=lambda m: m.data.market_index)], axis=1
-            ))
+            st.write(sorted(perp_market_map.values(), key=lambda m: m.data.market_index))
+            st.write(
+                [pd.DataFrame(serialize_perp_market(x.data)).T for x in sorted(perp_market_map.values(), key=lambda m: m.data.market_index)]
+            )
             st.write("Spot markets:")
-            st.write(pd.concat(
-                [pd.DataFrame(serialize_spot_market(x.data)).T for x in sorted(spot_market_map.values(), key=lambda m: m.data.market_index)], axis=1
-            ))
+            st.write(
+                [pd.DataFrame(serialize_spot_market(x.data)).T for x in sorted(spot_market_map.values(), key=lambda m: m.data.market_index)]
+            )
         return
 
     st.write(f"**Market Index:** {selected_market.data.market_index}")
