@@ -1,9 +1,9 @@
 from typing import Optional
 
 from driftpy.constants import PRICE_PRECISION, SPOT_BALANCE_PRECISION
-from driftpy.constants.vaults import get_vaults_program
 from driftpy.pickle.vat import Vat
 from driftpy.types import is_variant
+from driftpy.vaults import get_vaults_program
 from fastapi import APIRouter
 
 from backend.state import BackendRequest

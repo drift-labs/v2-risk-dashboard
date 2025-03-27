@@ -19,6 +19,7 @@ from backend.api import (
     price_shock,
     snapshot,
     ucache,
+    vaults,
 )
 from backend.middleware.cache_middleware import CacheMiddleware
 from backend.middleware.readiness import ReadinessMiddleware
@@ -82,6 +83,7 @@ app.include_router(snapshot.router, prefix="/api/snapshot", tags=["snapshot"])
 app.include_router(ucache.router, prefix="/api/ucache", tags=["ucache"])
 app.include_router(deposits.router, prefix="/api/deposits", tags=["deposits"])
 app.include_router(pnl.router, prefix="/api/pnl", tags=["pnl"])
+app.include_router(vaults.router, prefix="/api/vaults", tags=["vaults"])
 
 
 # NOTE: All other routes should be in /api/* within the /api folder. Routes outside of /api are not exposed in k8s
