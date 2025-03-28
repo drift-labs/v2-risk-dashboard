@@ -1,6 +1,8 @@
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from driftpy.constants.perp_markets import mainnet_perp_market_configs
+from driftpy.constants.spot_markets import mainnet_spot_market_configs
 
 from lib.api import fetch_api_data
 
@@ -126,6 +128,16 @@ def health_page():
         
         # Convert to DataFrame and add pagination
         df = pd.DataFrame(largest_perp_positions)
+        
+        # Find market index column regardless of capitalization
+        market_index_col = next((col for col in df.columns if col.lower() == 'market index' or col.lower() == 'market_index'), None)
+        
+        # Add market symbol to market_index column if it exists
+        if market_index_col:
+            df[market_index_col] = df[market_index_col].map(
+                lambda x: f"{x} ({mainnet_perp_market_configs[int(x)].symbol})" if pd.notna(x) else x
+            )
+            
         total_rows = len(df)
         page_size = 10
         total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
@@ -149,24 +161,164 @@ def health_page():
         most_levered_positions = fetch_api_data(
             "health",
             "most_levered_perp_positions_above_1m",
+            params={
+                "number_of_positions": num_positions,
+                "market_index": None
+            },
             retry=True,
         )
         st.markdown("### **Most levered perp positions > $1m:**")
-        st.dataframe(pd.DataFrame(most_levered_positions), hide_index=True)
+        
+        # Format market index in most_levered_positions too
+        most_levered_df = pd.DataFrame(most_levered_positions)
+        
+        # Find market index column regardless of capitalization
+        ml_market_index_col = next((col for col in most_levered_df.columns if col.lower() == 'market index' or col.lower() == 'market_index'), None)
+        
+        # Add market symbol to market_index column if it exists
+        if ml_market_index_col:
+            most_levered_df[ml_market_index_col] = most_levered_df[ml_market_index_col].map(
+                lambda x: f"{x} ({mainnet_perp_market_configs[int(x)].symbol})" if pd.notna(x) else x
+            )
+        
+        # Add pagination
+        total_rows = len(most_levered_df)
+        page_size = 10
+        total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
+        
+        if total_pages > 1:
+            page_number = st.number_input(
+                "Page", 
+                min_value=1, 
+                max_value=total_pages, 
+                value=1,
+                key="levered_perp_positions_page"
+            )
+            start_idx = (page_number - 1) * page_size
+            end_idx = min(start_idx + page_size, total_rows)
+            
+            st.write(f"Showing positions {start_idx + 1}-{end_idx} of {total_rows}")
+            st.dataframe(most_levered_df.iloc[start_idx:end_idx], hide_index=True)
+        else:
+            st.dataframe(most_levered_df, hide_index=True)
 
     with spot_col:
+        st.markdown("### **Largest spot borrows:**")
+        # Add number input to control how many positions to show
+        spot_num_positions = st.number_input(
+            "Number of values to return for spot borrows",
+            min_value=10,
+            max_value=100,
+            value=10,
+            step=10,
+            key="num_spot_positions"
+        )
+        
+        # Add bypass cache toggle when in debug mode
+        spot_bypass_cache = False
+        if debug_mode:
+            spot_bypass_cache = st.toggle(
+                "Bypass cache for spot borrows",
+                value=False,
+                help="When enabled, the API will bypass the cache and fetch fresh data directly",
+                key="bypass_spot_cache"
+            )
+            
         largest_spot_borrows = fetch_api_data(
             "health",
             "largest_spot_borrows",
+            params={
+                "number_of_positions": spot_num_positions,
+                "market_index": None,
+                "bypass_cache": "true" if spot_bypass_cache else "false"
+            },
             retry=True,
         )
-        st.markdown("### **Largest spot borrows:**")
-        st.dataframe(pd.DataFrame(largest_spot_borrows), hide_index=True)
+        
+        # Convert to dataframe and add market symbols
+        spot_df = pd.DataFrame(largest_spot_borrows)
+        
+        # Find market index column regardless of capitalization
+        spot_market_index_col = next((col for col in spot_df.columns if col.lower() == 'market index' or col.lower() == 'market_index'), None)
+        
+        # Add market symbol to market_index column if it exists
+        if spot_market_index_col:
+            spot_df[spot_market_index_col] = spot_df[spot_market_index_col].map(
+                lambda x: f"{x} ({mainnet_spot_market_configs[int(x)].symbol})" if pd.notna(x) else x
+            )
+            
+        # Add pagination
+        total_rows = len(spot_df)
+        page_size = 10
+        total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
+        
+        if total_pages > 1:
+            page_number = st.number_input(
+                "Page", 
+                min_value=1, 
+                max_value=total_pages, 
+                value=1,
+                key="spot_borrows_page"
+            )
+            start_idx = (page_number - 1) * page_size
+            end_idx = min(start_idx + page_size, total_rows)
+            
+            st.write(f"Showing borrows {start_idx + 1}-{end_idx} of {total_rows}")
+            st.dataframe(spot_df.iloc[start_idx:end_idx], hide_index=True)
+        else:
+            st.dataframe(spot_df, hide_index=True)
 
         most_levered_borrows = fetch_api_data(
             "health",
             "most_levered_spot_borrows_above_1m",
+            params={
+                "number_of_positions": spot_num_positions,
+                "market_index": None
+            },
             retry=True,
         )
         st.markdown("### **Most levered spot borrows > $750k:**")
-        st.dataframe(pd.DataFrame(most_levered_borrows), hide_index=True)
+        
+        # Convert to dataframe and add market symbols
+        levered_spot_df = pd.DataFrame(most_levered_borrows)
+        
+        # Find market index column regardless of capitalization
+        levered_spot_market_index_col = next((col for col in levered_spot_df.columns if col.lower() == 'market index' or col.lower() == 'market_index'), None)
+        
+        # Add market symbol to market_index column if it exists
+        if levered_spot_market_index_col:
+            levered_spot_df[levered_spot_market_index_col] = levered_spot_df[levered_spot_market_index_col].map(
+                lambda x: f"{x} ({mainnet_spot_market_configs[int(x)].symbol})" if pd.notna(x) else x
+            )
+            
+        # Check if there are any error messages in the data
+        has_errors = 'Error' in levered_spot_df.columns and levered_spot_df['Error'].any()
+        if has_errors:
+            error_records = levered_spot_df[levered_spot_df['Error'].notna() & (levered_spot_df['Error'] != '')]
+            if not error_records.empty:
+                st.warning(f"Found {len(error_records)} positions with errors. Please check with the team.")
+                with st.expander("View Error Details"):
+                    for idx, row in error_records.iterrows():
+                        market_index = row[levered_spot_market_index_col] if levered_spot_market_index_col in row else row.get('Market Index', 'Unknown')
+                        st.markdown(f"**Market {market_index}:** {row['Error']}")
+        
+        # Add pagination
+        total_rows = len(levered_spot_df)
+        page_size = 10
+        total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
+        
+        if total_pages > 1:
+            page_number = st.number_input(
+                "Page", 
+                min_value=1, 
+                max_value=total_pages, 
+                value=1,
+                key="levered_spot_borrows_page"
+            )
+            start_idx = (page_number - 1) * page_size
+            end_idx = min(start_idx + page_size, total_rows)
+            
+            st.write(f"Showing borrows {start_idx + 1}-{end_idx} of {total_rows}")
+            st.dataframe(levered_spot_df.iloc[start_idx:end_idx], hide_index=True)
+        else:
+            st.dataframe(levered_spot_df, hide_index=True)
