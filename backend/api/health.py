@@ -194,15 +194,21 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
 
 
 @router.get("/most_levered_perp_positions_above_1m")
-def get_most_levered_perp_positions_above_1m(request: BackendRequest):
+def get_most_levered_perp_positions_above_1m(request: BackendRequest, number_of_positions: int = 10, market_index: int = None):
     """
-    Get the top 10 most leveraged perpetual positions with value above $1 million.
+    Get the most leveraged perpetual positions with value above $1 million.
 
     This endpoint calculates the leverage of each perpetual position with a value
-    over $1 million and returns the top 10 most leveraged positions.
+    over $1 million and returns the most leveraged positions, limited by number_of_positions.
+    Results can be filtered by market_index if provided.
+
+    Args:
+        request: The backend request object
+        number_of_positions: Maximum number of positions to return (default: 10)
+        market_index: Optional market index to filter by
 
     Returns:
-        dict: A dictionary containing lists of data for the top 10 leveraged positions:
+        dict: A dictionary containing lists of data for the top leveraged positions:
         - Market Index (list[int]): The market indices of the top positions
         - Value (list[str]): The formatted dollar values of the positions
         - Base Asset Amount (list[str]): The formatted base asset amounts
@@ -223,6 +229,10 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest):
             continue
         if total_collateral > 0:
             for position in user.get_user_account().perp_positions:
+                # Skip if filtering by market_index
+                if market_index is not None and position.market_index != market_index:
+                    continue
+                    
                 if position.base_asset_amount > 0:
                     market_price = vat.perp_oracles.get(position.market_index)
                     if market_price is not None:
@@ -240,7 +250,7 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest):
                                 leverage,
                             )
 
-                            if len(top_positions) < 10:
+                            if len(top_positions) < number_of_positions:
                                 heapq.heappush(top_positions, heap_item)
                             else:
                                 heapq.heappushpop(top_positions, heap_item)
@@ -264,15 +274,21 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest):
 
 
 @router.get("/largest_spot_borrows")
-def get_largest_spot_borrows(request: BackendRequest):
+def get_largest_spot_borrows(request: BackendRequest, number_of_positions: int = 10, market_index: int = None):
     """
-    Get the top 10 largest spot borrowing positions by value.
+    Get the largest spot borrowing positions by value.
 
     This endpoint retrieves the largest spot borrowing positions across all users,
-    calculated based on the current market prices.
+    calculated based on the current market prices. Results can be limited by 
+    number_of_positions and filtered by market_index if provided.
+
+    Args:
+        request: The backend request object
+        number_of_positions: Maximum number of positions to return (default: 10)
+        market_index: Optional market index to filter by
 
     Returns:
-        dict: A dictionary containing lists of data for the top 10 borrowing positions:
+        dict: A dictionary containing lists of data for the top borrowing positions:
         - Market Index (list[int]): The market indices of the top borrows
         - Value (list[str]): The formatted dollar values of the borrows
         - Scaled Balance (list[str]): The formatted scaled balances of the borrows
@@ -283,6 +299,10 @@ def get_largest_spot_borrows(request: BackendRequest):
 
     for user in vat.users.values():
         for position in user.get_user_account().spot_positions:
+            # Skip if filtering by market_index
+            if market_index is not None and position.market_index != market_index:
+                continue
+                
             if position.scaled_balance > 0 and is_variant(
                 position.balance_type, "Borrow"
             ):
@@ -299,7 +319,7 @@ def get_largest_spot_borrows(request: BackendRequest):
                         position.scaled_balance / SPOT_BALANCE_PRECISION,
                     )
 
-                    if len(top_borrows) < 10:
+                    if len(top_borrows) < number_of_positions:
                         heapq.heappush(top_borrows, heap_item)
                     else:
                         heapq.heappushpop(top_borrows, heap_item)
@@ -322,46 +342,95 @@ def get_largest_spot_borrows(request: BackendRequest):
 
 
 @router.get("/most_levered_spot_borrows_above_1m")
-def get_most_levered_spot_borrows_above_1m(request: BackendRequest):
+def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_positions: int = 10, market_index: int = None):
     """
-    Get the top 10 most leveraged spot borrowing positions with value above $750,000.
+    Get the most leveraged spot borrowing positions with value above $750,000.
 
     This endpoint calculates the leverage of each spot borrowing position with a value
-    over $750,000 and returns the top 10 most leveraged positions.
+    over $750,000 and returns the most leveraged positions, limited by number_of_positions.
+    Results can be filtered by market_index if provided.
+
+    Args:
+        request: The backend request object
+        number_of_positions: Maximum number of positions to return (default: 10)
+        market_index: Optional market index to filter by
 
     Returns:
-        dict: A dictionary containing lists of data for the top 10 leveraged borrowing positions:
+        dict: A dictionary containing lists of data for the leveraged borrowing positions:
         - Market Index (list[int]): The market indices of the top borrows
         - Value (list[str]): The formatted dollar values of the borrows
         - Scaled Balance (list[str]): The formatted scaled balances of the borrows
         - Leverage (list[str]): The formatted leverage ratios
         - Public Key (list[str]): The public keys of the borrowers
+        - Error (list[str]): Error details if any (empty string if no error)
     """
     vat: Vat = request.state.backend_state.vat
-    top_borrows: list[tuple[float, str, int, float, float]] = []
+    top_borrows: list[tuple[float, str, int, float, float, str]] = []  # Added error field
+    error_positions = []  # Track positions with errors for logging
 
     for user in vat.users.values():
+        user_collateral = 0
+        collateral_error = ""
+        
         try:
-            total_collateral = user.get_total_collateral() / PRICE_PRECISION
+            user_collateral = user.get_total_collateral() / PRICE_PRECISION
         except Exception as e:
-            print(
-                f"==> Error from get_most_levered_spot_borrows_above_1m [{user.user_public_key}] ",
-                e,
+            collateral_error = f"Collateral error: {str(e)}"
+            logger.warning(
+                f"Error calculating collateral for user [{user.user_public_key}]: {str(e)}"
             )
-            raise e
-        if total_collateral > 0:
-            for position in user.get_user_account().spot_positions:
-                if (
-                    is_variant(position.balance_type, "Borrow")
-                    and position.scaled_balance > 0
-                ):
-                    market_price = vat.spot_oracles.get(position.market_index)
-                    if market_price is not None:
+            
+        for position in user.get_user_account().spot_positions:
+            # Skip if filtering by market_index
+            if market_index is not None and position.market_index != market_index:
+                continue
+                
+            if is_variant(position.balance_type, "Borrow") and position.scaled_balance > 0:
+                position_error = collateral_error  # Start with any collateral error
+                market_price = vat.spot_oracles.get(position.market_index)
+                
+                if market_price is None:
+                    oracle_error = f"Oracle for market {position.market_index} not found"
+                    position_error = oracle_error if not position_error else f"{position_error}; {oracle_error}"
+                    logger.warning(f"{oracle_error} for user [{user.user_public_key}]")
+                    
+                    # Add position with error
+                    borrow_value = 0  # Default value when price is unknown
+                    scaled_balance = position.scaled_balance / SPOT_BALANCE_PRECISION
+                    leverage = 0  # Default leverage when calculation is impossible
+                    
+                    error_positions.append({
+                        "market_index": position.market_index,
+                        "public_key": user.user_public_key,
+                        "scaled_balance": scaled_balance,
+                        "error": position_error
+                    })
+                    
+                    # If we don't have enough items yet, add this one with error
+                    if len(top_borrows) < number_of_positions:
+                        heap_item = (
+                            borrow_value,  # Will be sorted last due to 0 value
+                            user.user_public_key,
+                            position.market_index,
+                            scaled_balance,
+                            leverage,
+                            position_error,
+                        )
+                        heapq.heappush(top_borrows, heap_item)
+                else:
+                    try:
                         market_price_ui = market_price.price / PRICE_PRECISION
                         borrow_value = (
                             position.scaled_balance / SPOT_BALANCE_PRECISION
                         ) * market_price_ui
-                        leverage = borrow_value / total_collateral
+                        
+                        if user_collateral > 0:
+                            leverage = borrow_value / user_collateral
+                        else:
+                            leverage = float('inf')  # Infinite leverage when collateral is 0
+                            if not position_error:
+                                position_error = "Zero collateral"
+                        
                         if borrow_value > 750_000:
                             heap_item = (
                                 to_financial(borrow_value),
@@ -369,26 +438,45 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest):
                                 position.market_index,
                                 position.scaled_balance / SPOT_BALANCE_PRECISION,
                                 leverage,
+                                position_error,  # Empty string if no error
                             )
 
-                            if len(top_borrows) < 10:
+                            if len(top_borrows) < number_of_positions:
                                 heapq.heappush(top_borrows, heap_item)
                             else:
                                 heapq.heappushpop(top_borrows, heap_item)
+                    except Exception as e:
+                        calc_error = f"Calculation error: {str(e)}"
+                        position_error = calc_error if not position_error else f"{position_error}; {calc_error}"
+                        logger.warning(
+                            f"Error processing borrow position for user [{user.user_public_key}] market [{position.market_index}]: {str(e)}"
+                        )
+                        
+                        # Add error position
+                        error_positions.append({
+                            "market_index": position.market_index,
+                            "public_key": user.user_public_key,
+                            "scaled_balance": position.scaled_balance / SPOT_BALANCE_PRECISION,
+                            "error": position_error
+                        })
 
-    borrows = sorted(
+    # Log all error positions for debugging
+    if error_positions:
+        logger.warning(f"Found {len(error_positions)} positions with errors: {error_positions}")
+
+    positions = sorted(
         top_borrows,
-        key=lambda x: x[4],
+        key=lambda x: x[4] if not x[5] else float('-inf'),  # Sort error positions first
+        reverse=True,
     )
 
-    borrows.reverse()
-
     data = {
-        "Market Index": [pos[2] for pos in borrows],
-        "Value": [f"${pos[0]:,.2f}" for pos in borrows],
-        "Scaled Balance": [f"{pos[3]:,.2f}" for pos in borrows],
-        "Leverage": [f"{pos[4]:,.2f}" for pos in borrows],
-        "Public Key": [pos[1] for pos in borrows],
+        "Market Index": [pos[2] for pos in positions],
+        "Value": [f"${pos[0]:,.2f}" if not pos[5] else "N/A" for pos in positions],
+        "Scaled Balance": [f"{pos[3]:,.2f}" for pos in positions],
+        "Leverage": [f"{pos[4]:,.2f}" if not pos[5] and pos[4] != float('inf') else "∞" if pos[4] == float('inf') else "N/A" for pos in positions],
+        "Public Key": [pos[1] for pos in positions],
+        "Error": [pos[5] for pos in positions],
     }
 
     return data
