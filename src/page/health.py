@@ -96,14 +96,29 @@ def health_page():
     with perp_col:
         st.markdown("### **Largest perp positions:**")
         
+        # Create a container for the filter controls
+        perp_filter_col1, perp_filter_col2 = st.columns(2)
+        
         # Add number input to control how many positions to show
-        num_positions = st.number_input(
+        num_positions = perp_filter_col1.number_input(
             "Number of values to return for perp positions",
             min_value=10,
             max_value=100,
             value=10,
             step=10,
             key="num_perp_positions"
+        )
+        
+        # Add market index selector
+        perp_market_options = [{"label": f"{idx} ({cfg.symbol})", "value": idx} 
+                              for idx, cfg in enumerate(mainnet_perp_market_configs) if cfg is not None]
+        perp_market_options.insert(0, {"label": "All Markets", "value": None})
+        
+        selected_perp_market = perp_filter_col2.selectbox(
+            "Filter by market",
+            options=[opt["value"] for opt in perp_market_options],
+            format_func=lambda x: next((opt["label"] for opt in perp_market_options if opt["value"] == x), "All Markets"),
+            key="perp_market_filter"
         )
         
         # Add bypass cache toggle when in debug mode
@@ -121,6 +136,7 @@ def health_page():
             "largest_perp_positions",
             params={
                 "number_of_positions": num_positions,
+                "market_index": selected_perp_market,
                 "bypass_cache": "true" if bypass_cache else "false"
             },
             retry=True,
@@ -163,7 +179,7 @@ def health_page():
             "most_levered_perp_positions_above_1m",
             params={
                 "number_of_positions": num_positions,
-                "market_index": None
+                "market_index": selected_perp_market
             },
             retry=True,
         )
@@ -204,14 +220,29 @@ def health_page():
 
     with spot_col:
         st.markdown("### **Largest spot borrows:**")
+        # Create a container for the spot filter controls
+        spot_filter_col1, spot_filter_col2 = st.columns(2)
+        
         # Add number input to control how many positions to show
-        spot_num_positions = st.number_input(
+        spot_num_positions = spot_filter_col1.number_input(
             "Number of values to return for spot borrows",
             min_value=10,
             max_value=100,
             value=10,
             step=10,
             key="num_spot_positions"
+        )
+        
+        # Add market index selector for spot markets
+        spot_market_options = [{"label": f"{idx} ({cfg.symbol})", "value": idx} 
+                              for idx, cfg in enumerate(mainnet_spot_market_configs) if cfg is not None]
+        spot_market_options.insert(0, {"label": "All Markets", "value": None})
+        
+        selected_spot_market = spot_filter_col2.selectbox(
+            "Filter by market",
+            options=[opt["value"] for opt in spot_market_options],
+            format_func=lambda x: next((opt["label"] for opt in spot_market_options if opt["value"] == x), "All Markets"),
+            key="spot_market_filter"
         )
         
         # Add bypass cache toggle when in debug mode
@@ -229,7 +260,7 @@ def health_page():
             "largest_spot_borrows",
             params={
                 "number_of_positions": spot_num_positions,
-                "market_index": None,
+                "market_index": selected_spot_market,
                 "bypass_cache": "true" if spot_bypass_cache else "false"
             },
             retry=True,
@@ -273,7 +304,7 @@ def health_page():
             "most_levered_spot_borrows_above_1m",
             params={
                 "number_of_positions": spot_num_positions,
-                "market_index": None
+                "market_index": selected_spot_market
             },
             retry=True,
         )
