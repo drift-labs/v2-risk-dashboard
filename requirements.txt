@@ -13,3 +13,4 @@ requests==2.32.3
 plotly==6.0.0
 anchorpy==0.20.1
 driftpy>=0.8.35
+ccxt==4.2.17
