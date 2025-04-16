@@ -511,7 +511,7 @@ def process_cmc_data(cmc_data, all_symbols):
         st.error(f"Error processing CoinMarketCap data: {str(e)}")
         return pd.DataFrame({'MC $m': []})
 
-DEFAULT_PICKLE_DIR = "drift_cache"
+DEFAULT_PICKLE_DIR = "pickles"
 CACHE_MAX_AGE_SECONDS = 3600  # 1 hour
 
 def get_newest_pickle_set(directory: str) -> tuple[Optional[Dict[str, str]], Optional[float]]:
