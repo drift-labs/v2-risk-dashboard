@@ -1,13 +1,5 @@
 # This script is used to provide backend functionality for /src/page/delist_recommender.py
-# It should make use of the backend state and middleware to fetch the data borrowing similar logic from /backend/api/asset_liability.py and /backend/api/health.py and /backend/api/price_shock.py
 
-# It should return a JSON object with the following fields:
-# - status: "success" or "error"
-# - message: a message to be displayed to the user
-# - data: a JSON object containing the data to be displayed to the user
-
-# This script provides backend functionality for delist recommender analysis
-# It makes use of the backend state and middleware to fetch data efficiently
 import os
 import math
 import sys
@@ -43,15 +35,23 @@ STABLE_COINS = {"USDC", 'FDUSD', "USDT", 'DAI', 'USDB', 'USDE', 'TUSD', 'USR'}
 DAYS_TO_CONSIDER = 30
 
 # Drift API configuration
-DRIFT_API_BASE_URL = "https://y7n4m4tnpb.execute-api.eu-west-1.amazonaws.com"
-DRIFT_API_HEADERS = {"X-Origin-Verify": "AolCE35uXby9TJHHgoz6"}
+DRIFT_DATA_API_BASE_URL = "https://y7n4m4tnpb.execute-api.eu-west-1.amazonaws.com"
+DRIFT_DATA_API_HEADERS = {"X-Origin-Verify": "AolCE35uXby9TJHHgoz6"}
 API_RATE_LIMIT_INTERVAL = 0.1  # seconds between requests
+
+# Drift Score Boost - These are symbols that get a score boost in the delist recommender
+DRIFT_SCORE_BOOST_SYMBOLS = {
+    "DRIFT-PERP",
+}
+
+# Drift Score Boost Amount - The amount of score boost to apply to the symbols in DRIFT_SCORE_BOOST_SYMBOLS
+DRIFT_SCORE_BOOST_AMOUNT = 10
 
 # Global rate limiter variables for API calls
 rate_limit_lock = asyncio.Lock()
 last_request_time = 0.0
 
-# Symbols to ignore completely during analysis
+# Prediction Market Symbols to ignore completely during analysis
 IGNORED_SYMBOLS = {
     "TRUMP-WIN-2024-BET",
     "KAMALA-POPULAR-VOTE-2024-BET",
@@ -74,12 +74,12 @@ IGNORED_SYMBOLS = {
 # Note: Inputs to scoring ('MC', 'Spot Volume', etc.) are expected in full dollar amounts, not millions.
 DRIFT_SCORE_CUTOFFS = {
     'Market Cap Score': {
-        'MC': {'kind': 'exp', 'start': 1000000, 'end': 5000000000, 'steps': 20}, # $1M to $5B
+        'MC': {'kind': 'exp', 'start': 1_000_000, 'end': 5_000_000_000, 'steps': 20}, # $1M to $5B
     },
     'Spot Vol Score': {
         # Expects 'Spot Volume' (sum of avg daily vol) and 'Spot Vol Geomean' (geomean of top 3 avg daily vol) in full dollars
-        'Spot Volume': {'kind': 'exp', 'start': 10000, 'end': 1000000000, 'steps': 10}, # $10k to $1B
-        'Spot Vol Geomean': {'kind': 'exp', 'start': 10000, 'end': 1000000000, 'steps': 10}, # $10k to $1B
+        'Spot Volume': {'kind': 'exp', 'start': 10_000, 'end': 1_000_000_000, 'steps': 10}, # $10k to $1B
+        'Spot Vol Geomean': {'kind': 'exp', 'start': 10_000, 'end': 1_000_000_000, 'steps': 10}, # $10k to $1B
     },
     'Futures Vol Score': {
          # Expects 'Fut Volume' (sum of avg daily vol) and 'Fut Vol Geomean' (geomean of top 3 avg daily vol) in full dollars
@@ -88,13 +88,14 @@ DRIFT_SCORE_CUTOFFS = {
     },
     'Drift Activity Score': {
         # Expects 'Volume on Drift' (estimated 30d vol) and 'OI on Drift' in full dollars
-        'Volume on Drift': {'kind': 'exp', 'start': 1000, 'end': 500000000, 'steps': 10}, # $1k to $500M
-        'OI on Drift': {'kind': 'exp', 'start': 1000, 'end': 500000000, 'steps': 10}, # $1k to $500M
+        'Volume on Drift': {'kind': 'exp', 'start': 1_000, 'end': 500_000_000, 'steps': 10}, # $1k to $500M
+        'OI on Drift': {'kind': 'exp', 'start': 1_000, 'end': 500_000_000, 'steps': 10}, # $1k to $500M
     },
 }
 
 # Score boundaries for delist recommendations
-SCORE_LB = {0: 0, 5: 37, 10: 48, 20: 60}   # Lower bounds
+SCORE_UB = {0: 62, 3: 75, 5: 85, 10: 101} # Upper Bound: If score >= this, consider increasing leverage
+SCORE_LB = {0: 0, 5: 37, 10: 48, 20: 60}  # Lower Bound: If score < this, consider decreasing leverage/delisting
 
 # Reference exchanges for market data
 REFERENCE_SPOT_EXCH = {
@@ -1327,6 +1328,15 @@ def build_scores(df):
     score_components = list(DRIFT_SCORE_CUTOFFS.keys())
     output_df['Score'] = output_df[score_components].sum(axis=1)
 
+    # Apply score boost for specific symbols
+    output_df['Score'] = output_df['Score'].add(
+        pd.Series(
+            [DRIFT_SCORE_BOOST_AMOUNT if symbol in DRIFT_SCORE_BOOST_SYMBOLS else 0 
+             for symbol in output_df.index],
+            index=output_df.index
+        )
+    )
+
     return output_df
 
 def generate_recommendation(row):
@@ -2062,7 +2072,7 @@ async def fetch_api_page(session, url: str, retries: int = 5):
             last_request_time = time.time()
         
         try:
-            async with session.get(url, headers=DRIFT_API_HEADERS, timeout=10) as response:
+            async with session.get(url, headers=DRIFT_DATA_API_HEADERS, timeout=10) as response:
                 if response.status != 200:
                     logger.warning(f"API request failed: {url}, status: {response.status}")
                     if attempt < retries - 1:
@@ -2104,7 +2114,7 @@ async def fetch_market_trades(session, symbol: str, start_date: datetime, end_da
     
     while current_date <= end_date:
         year, month, day = current_date.year, current_date.month, current_date.day
-        url = f"{DRIFT_API_BASE_URL}/market/{symbol}/trades/{year}/{month}/{day}?format=json"
+        url = f"{DRIFT_DATA_API_BASE_URL}/market/{symbol}/trades/{year}/{month}/{day}?format=json"
         
         logger.debug(f"Fetching trades for {symbol} on {year}/{month}/{day}")
         
