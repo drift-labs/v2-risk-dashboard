@@ -34,14 +34,16 @@ logger = logging.getLogger("backend.api.delist_recommender")
 STABLE_COINS = {"USDC", 'FDUSD', "USDT", 'DAI', 'USDB', 'USDE', 'TUSD', 'USR'}
 DAYS_TO_CONSIDER = 30
 
-# Drift API configuration
+# --- CoinMarketCap API Configuration ---
+CMC_API_KEY = "973f2ad5-6b18-4f01-a8d9-c1d50460ae3a"
+
+# --- Drift API Configuration ---
 DRIFT_DATA_API_BASE_URL = "https://y7n4m4tnpb.execute-api.eu-west-1.amazonaws.com"
 DRIFT_DATA_API_HEADERS = {"X-Origin-Verify": "AolCE35uXby9TJHHgoz6"}
 API_RATE_LIMIT_INTERVAL = 0.1  # seconds between requests
 
 # Drift Score Boost - These are symbols that get a score boost in the delist recommender
 DRIFT_SCORE_BOOST_SYMBOLS = {
-    "DRIFT-PERP",
 }
 
 # Drift Score Boost Amount - The amount of score boost to apply to the symbols in DRIFT_SCORE_BOOST_SYMBOLS
@@ -95,7 +97,7 @@ DRIFT_SCORE_CUTOFFS = {
 
 # Score boundaries for delist recommendations
 SCORE_UB = {0: 62, 3: 75, 5: 85, 10: 101} # Upper Bound: If score >= this, consider increasing leverage
-SCORE_LB = {0: 0, 5: 37, 10: 48, 20: 60}  # Lower Bound: If score < this, consider decreasing leverage/delisting
+SCORE_LB = {0: 0, 5: 31, 10: 48, 20: 60}  # Lower Bound: If score < this, consider decreasing leverage/delisting
 
 # Reference exchanges for market data
 REFERENCE_SPOT_EXCH = {
@@ -103,7 +105,7 @@ REFERENCE_SPOT_EXCH = {
 }
 
 REFERENCE_FUT_EXCH = {
-    'okx', 'gate', 'mexc', 'htx', 'bitmex', 'bingx', 'xt'
+    'okx', 'gate', 'mexc', 'htx', 'bitmex', 'bingx'
 }
 
 # Add a known decimals mapping before the get_drift_data function
@@ -811,7 +813,7 @@ def dl_cmc_data():
         logger.info("==> Fetching market cap data from CoinMarketCap")
 
         # Get API key from environment variables
-        cmc_api_key = os.environ.get("CMC_API_KEY")
+        cmc_api_key = CMC_API_KEY # TODO: os.environ.get("CMC_API_KEY")
         if not cmc_api_key:
             logger.error("==> CoinMarketCap API key is not set in .env file. Market cap data will not be available.")
             return None
