@@ -94,12 +94,6 @@ if __name__ == "__main__":
             title="Delist Recommender",
             icon="🚫",
         ),
-        st.Page(
-            list_delist_recommender_page,
-            url_path="list-delist-recommender",
-            title="List Delist Recommender",
-            icon="🔍",
-        ),
     ]
 
     risk_pages = [
