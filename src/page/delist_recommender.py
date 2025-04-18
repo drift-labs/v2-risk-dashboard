@@ -119,8 +119,8 @@ def delist_recommender_page():
                     # The 'index' key contains the symbols in the sample response
                     if 'index' in results_dict and 'Symbol' not in results_dict:
                          # If 'index' exists and 'Symbol' doesn't, use 'index' for symbols
-                        df = pd.DataFrame(results_dict)
-                        df = df.rename(columns={'index': 'Symbol'})
+                         df = pd.DataFrame(results_dict)
+                         df = df.rename(columns={'index': 'Symbol'})
                     elif 'Symbol' in results_dict:
                          # If 'Symbol' key already exists
                          df = pd.DataFrame(results_dict)
@@ -137,7 +137,7 @@ def delist_recommender_page():
 
                     # Ensure correct sorting by Market Index if available
                     if 'Market Index' in df.columns:
-                        df = df.sort_values(by='Market Index')
+                         df = df.sort_values(by='Market Index')
 
                     # Select and order columns for display
                     display_cols = [
@@ -164,9 +164,9 @@ def delist_recommender_page():
                     if 'MC' in df_display.columns: formatters['MC'] = format_large_number
                     if 'Score' in df_display.columns: formatters['Score'] = "{:.2f}"
                     if 'Max Lev. on Drift' in df_display.columns:
-                        formatters['Max Lev. on Drift'] = lambda x: f"{int(x)}x" if pd.notna(x) else "N/A"
+                         formatters['Max Lev. on Drift'] = lambda x: f"{int(x)}x" if pd.notna(x) else "N/A"
                     if 'Market Index' in df_display.columns:
-                         formatters['Market Index'] = lambda x: f"{int(x)}" if pd.notna(x) else "N/A"
+                          formatters['Market Index'] = lambda x: f"{int(x)}" if pd.notna(x) else "N/A"
 
 
                     # Apply formatting and styling
@@ -181,17 +181,17 @@ def delist_recommender_page():
                     with st.expander("Show Full Data Table"):
                         # Apply basic formatting to all relevant columns in the original df
                         full_formatters = {
-                             'OI on Drift': format_large_number,
-                             'Volume on Drift': format_large_number,
-                             'Spot Volume': format_large_number,
-                             'Spot Vol Geomean': format_large_number,
-                             'Fut Volume': format_large_number,
-                             'Fut Vol Geomean': format_large_number,
-                             'MC': format_large_number,
-                             'Oracle Price': lambda x: f"${x:,.6f}" if pd.notna(x) else "N/A",
-                             'Funding Rate % (1h)': format_percentage,
-                             'Max Lev. on Drift': lambda x: f"{int(x)}x" if pd.notna(x) else "N/A",
-                             'Market Index': lambda x: f"{int(x)}" if pd.notna(x) else "N/A",
+                                'OI on Drift': format_large_number,
+                                'Volume on Drift': format_large_number,
+                                'Spot Volume': format_large_number,
+                                'Spot Vol Geomean': format_large_number,
+                                'Fut Volume': format_large_number,
+                                'Fut Vol Geomean': format_large_number,
+                                'MC': format_large_number,
+                                'Oracle Price': lambda x: f"${x:,.6f}" if pd.notna(x) else "N/A",
+                                'Funding Rate % (1h)': format_percentage,
+                                'Max Lev. on Drift': lambda x: f"{int(x)}x" if pd.notna(x) else "N/A",
+                                'Market Index': lambda x: f"{int(x)}" if pd.notna(x) else "N/A",
                         }
                         # Add score formatting for all score-related columns
                         score_cols = [col for col in df.columns if 'Score' in col or 'score' in col.lower()]
@@ -236,6 +236,90 @@ def delist_recommender_page():
     else:
         # Handle connection error (message already shown by fetch function)
         st.warning("Could not retrieve data from the backend. Please ensure it's running and accessible.")
+
+    st.markdown("---")
+
+    # Methodology Section
+    st.markdown(
+        """
+        ### 📊 Methodology
+
+        This section outlines how the delisting recommendations are generated, providing transparency into the data sources and calculations involved.
+
+        **Goal:**
+
+        The primary objective of this tool is to identify perpetual markets on Drift that may exhibit characteristics suggesting a need for review, potentially leading to leverage reduction or delisting. This is achieved by scoring markets based on several key liquidity, activity, and market size metrics.
+
+        **Data Sources:**
+
+        The analysis aggregates data from multiple sources:
+
+        1.  **Drift Protocol Data:**
+            * **Open Interest (OI):** Calculated by summing the absolute value of long and short positions held by users in each market, converted to USD using the current oracle price. This reflects the total value locked in open contracts on Drift.
+            * **Trading Volume:** The total USD value of trades executed in the market over the past 30 days, fetched directly from the Drift API.
+            * **Market Configuration:** Current maximum leverage allowed for each market.
+            * **Oracle Price:** The current price feed used by Drift for the market.
+        2.  **Centralized Exchange (CEX) Data:**
+            * **Spot & Futures Volume:** Fetches 30 days of daily OHLCV data from major CEXs (e.g., Coinbase, OKX, Gate, Kucoin, MEXC, Kraken for spot; OKX, Gate, MEXC, HTX, BitMEX for futures) using the `ccxt` library.
+            * Calculates the *average daily USD volume* across these exchanges for both spot and futures markets.
+            * Calculates the *geometric mean* of the top 3 exchange volumes for both spot and futures to reward markets with liquidity distributed across multiple venues.
+        3.  **CoinMarketCap (CMC) Data:**
+            * **Market Capitalization (MC):** Fetches the current market cap (or Fully Diluted Valuation if market cap is unavailable) from the CoinMarketCap API.
+
+        **Scoring (Total 80 Points + Boost):**
+
+        Markets are scored out of a potential 80 points based on the following categories. Scoring uses exponential ranges, meaning higher values generally receive diminishing point returns. All input metrics (Volume, OI, Market Cap) are processed in their full dollar amounts.
+
+        1.  **Market Cap Score (20 Points):**
+            * Assesses the overall size and significance of the asset.
+            * Based on CMC Market Cap (MC).
+            * Range: 0 points for less than $1M MC, up to 20 points for >= $5B MC.
+        2.  **Spot Volume Score (20 Points):**
+            * Measures the liquidity of the asset's spot markets on major CEXs. Higher spot volume generally indicates better price stability and oracle reliability.
+            * Metrics Used:
+                * Sum of Average Daily Spot Volume (0-10 points): Range from < $10k/day to >= $1B/day.
+                * Geometric Mean of Top 3 Average Daily Spot Volumes (0-10 points): Range from < $10k/day to >= $1B/day.
+        3.  **Futures Volume Score (20 Points):**
+            * Measures the liquidity of the asset's futures markets on major CEXs. Relevant for hedging and price discovery.
+            * Metrics Used:
+                * Sum of Average Daily Futures Volume (0-10 points): Range from < $10k/day to >= $1B/day.
+                * Geometric Mean of Top 3 Average Daily Futures Volumes (0-10 points): Range from < $10k/day to >= $1B/day.
+        4.  **Drift Activity Score (20 Points):**
+            * Measures how actively the market is traded specifically on Drift.
+            * Metrics Used:
+                * 30-Day Drift Trading Volume (0-10 points): Range from < $1k to >= $500M.
+                * Drift Open Interest (OI) (0-10 points): Range from < $1k to >= $500M.
+
+        **Score Boost (Up to 10 Points):**
+
+        * Markets listed in `DRIFT_SCORE_BOOST_SYMBOLS` (currently: `DRIFT-PERP`) receive a +10 point boost to their final score.
+
+        **Recommendation Logic:**
+
+        The final recommendation ('Keep', 'Decrease Leverage', 'Delist') is determined by comparing the market's **Total Score** against dynamic lower bounds (`SCORE_LB`) that depend on the market's **Current Maximum Leverage** on Drift:
+
+        * **Score Lower Bounds (`SCORE_LB`):**
+            * Leverage <= 5x: Lower Bound = 37 points
+            * Leverage <= 10x: Lower Bound = 48 points
+            * Leverage <= 20x: Lower Bound = 60 points
+            * *(Note: Leverage 0x has a lower bound of 0)*
+
+        * **Decision Process:**
+            1.  Determine the applicable lower bound based on the market's current max leverage.
+            2.  If `Total Score < Applicable Lower Bound`:
+                * If `Current Max Leverage > 5x`: Recommend **Decrease Leverage**.
+                * If `Current Max Leverage <= 5x`: Recommend **Delist**.
+            3.  If `Total Score >= Applicable Lower Bound`: Recommend **Keep**.
+
+        This approach aims to be more conservative with lower-leverage markets, requiring a higher relative score to maintain their status, while allowing higher-leverage markets more leeway before recommending a decrease.
+
+        **Important Notes:**
+
+        * This tool provides recommendations based on quantitative data. Qualitative factors (e.g., project roadmap, team, regulatory concerns) are not considered.
+        * Data fetching from external APIs (CEXs, CMC) can occasionally fail or be incomplete, which might affect scores. The system attempts fallbacks where possible but defaults to zero values if data is unavailable.
+        * Prediction market symbols (e.g., `TRUMP-WIN-2024-BET`) are explicitly excluded from the analysis.
+        """
+    )
 
     st.markdown("---")
     st.caption("Data is cached for 10 minutes. Click Refresh to fetch the latest data from the backend.")

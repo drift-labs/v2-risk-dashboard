@@ -99,11 +99,11 @@ SCORE_LB = {0: 0, 5: 37, 10: 48, 20: 60}  # Lower Bound: If score < this, consid
 
 # Reference exchanges for market data
 REFERENCE_SPOT_EXCH = {
-    'coinbase', 'okx', 'gate', 'kucoin', 'mexc', 'kraken'
+    'coinbase', 'okx', 'gate', 'kucoin', 'mexc', 'kraken', 'htx'
 }
 
 REFERENCE_FUT_EXCH = {
-    'okx', 'gate', 'mexc', 'htx', 'bitmex'
+    'okx', 'gate', 'mexc', 'htx', 'bitmex', 'bingx', 'xt'
 }
 
 # Add a known decimals mapping before the get_drift_data function
