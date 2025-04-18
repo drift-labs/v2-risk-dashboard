@@ -1,16 +1,7 @@
 import streamlit as st
-import requests
 import pandas as pd
 import numpy as np
-import os
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-
-# Get backend URL from environment variable or use default
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-API_ENDPOINT = f"{BACKEND_URL}/api/delist-recommender/recommendations"
+from lib.api import fetch_api_data
 
 # --- Helper Functions ---
 
@@ -60,22 +51,16 @@ def style_recommendation(rec):
 def fetch_delist_recommendations():
     """Fetches delist recommendations from the backend API."""
     try:
-        print(f"Fetching data from: {API_ENDPOINT}") # Debug print
-        response = requests.get(API_ENDPOINT, timeout=120) # Increased timeout to 120s
-        response.raise_for_status() # Raise an exception for bad status codes
+        print("Fetching delist recommendations from API") # Debug print
+        response = fetch_api_data(
+            "delist-recommender", 
+            "recommendations", 
+            retry=True
+        )
         print("Successfully fetched data from API.") # Debug print
-        return response.json()
-    except requests.exceptions.Timeout:
-        st.error(f"Error: Timeout connecting to backend API at {API_ENDPOINT}. The request took longer than 120 seconds.")
-        return None
-    except requests.exceptions.ConnectionError:
-        st.error(f"Error: Could not connect to backend API at {API_ENDPOINT}. Please ensure the backend is running.")
-        return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error connecting to backend API: {e}")
-        return None
+        return response
     except Exception as e:
-        st.error(f"An unexpected error occurred while fetching data: {e}")
+        st.error(f"An error occurred while fetching data: {e}")
         return None
 
 # --- Streamlit Page ---
