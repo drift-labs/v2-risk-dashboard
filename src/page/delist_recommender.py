@@ -299,7 +299,7 @@ def delist_recommender_page():
         The final recommendation ('Keep', 'Decrease Leverage', 'Delist') is determined by comparing the market's **Total Score** against dynamic lower bounds (`SCORE_LB`) that depend on the market's **Current Maximum Leverage** on Drift:
 
         * **Score Lower Bounds (`SCORE_LB`):**
-            * Leverage <= 5x: Lower Bound = 37 points
+            * Leverage <= 5x: Lower Bound = 31 points
             * Leverage <= 10x: Lower Bound = 48 points
             * Leverage <= 20x: Lower Bound = 60 points
             * *(Note: Leverage 0x has a lower bound of 0)*
