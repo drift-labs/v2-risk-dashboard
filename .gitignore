@@ -40,3 +40,6 @@ ucache
 **/package-lock.json
 
 supervisord.pid
+
+# Exchange data
+exchange_data/*
