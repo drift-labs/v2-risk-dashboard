@@ -72,7 +72,8 @@ def list_recommender_page():
     """
     st.title("📈 List Recommender")
     st.markdown("This page provides recommendations for listing new tokens or adjusting leverage for existing markets on Drift based on various metrics calculated by the backend.")
-
+    st.markdown("THIS PAGE IS IN BETA AND SUBJECT TO CHANGE. USE AT YOUR OWN RISK.")
+    
     # Fetch data
     data = fetch_list_recommendations()
 
