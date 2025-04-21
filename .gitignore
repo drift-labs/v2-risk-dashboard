@@ -40,3 +40,7 @@ ucache
 **/package-lock.json
 
 supervisord.pid
+
+# Exchange data
+exchange_data/*
+list_recommender.log
