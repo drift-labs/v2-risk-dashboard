@@ -11,7 +11,7 @@ import requests
 import logging
 import random
 import traceback
-from typing import Dict, Optional, Any, List, Tuple, Set
+from typing import Dict, Optional, Any, List, Tuple, Set, Union
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -21,8 +21,14 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
+import aiohttp
 
 from backend.state import BackendRequest
+# Add driftpy imports
+from driftpy.pickle.vat import Vat
+from driftpy.drift_client import DriftClient
+from driftpy.constants.perp_markets import mainnet_perp_market_configs
+from driftpy.types import MarketType
 
 # Configure logging
 logging.basicConfig(
@@ -69,6 +75,71 @@ REFERENCE_FUT_EXCH = {
 STRICT_TOKENS = {'PURR', 'CATBAL', 'HFUN', 'PIP', 'JEFF', 'VAPOR', 'SOLV',
                  'FARM', 'ATEHUN', 'SCHIZO', 'OMNIX', 'POINTS', 'RAGE'}
 STRICT_BOOST = 5
+
+# --- Add Drift-specific Constants ---
+# Drift API Configuration
+DRIFT_DATA_API_BASE_URL = os.environ.get("DRIFT_DATA_API_BASE_URL") # DO NOT MODIFY THIS
+DRIFT_DATA_API_HEADERS = json.loads(os.environ.get("DRIFT_DATA_API_HEADERS", "{}")) # DO NOT MODIFY THIS
+API_RATE_LIMIT_INTERVAL = 0.1  # seconds between requests
+
+# Drift Score Boost - These are symbols that get a score boost in the delist recommender
+DRIFT_SCORE_BOOST_SYMBOLS = {}
+
+# Drift Score Boost Amount - The amount of score boost to apply to the symbols in DRIFT_SCORE_BOOST_SYMBOLS
+DRIFT_SCORE_BOOST_AMOUNT = 10
+
+# Global rate limiter variables for API calls
+rate_limit_lock = asyncio.Lock()
+last_request_time = 0.0
+
+# Prediction Market Symbols to ignore completely during analysis
+IGNORED_SYMBOLS = {
+    "TRUMP-WIN-2024-BET",
+    "KAMALA-POPULAR-VOTE-2024-BET",
+    "FED-CUT-50-SEPT-2024-BET",
+    "REPUBLICAN-POPULAR-AND-WIN-BET",
+    "BREAKPOINT-IGGYERIC-BET",
+    "DEMOCRATS-WIN-MICHIGAN-BET",
+    "LANDO-F1-SGP-WIN-BET",
+    "WARWICK-FIGHT-WIN-BET",
+    "WLF-5B-1W-BET",
+    "VRSTPN-WIN-F1-24-DRVRS-CHMP",
+    "LNDO-WIN-F1-24-US-GP",
+    "SUPERBOWL-LIX-LIONS-BET",
+    "SUPERBOWL-LIX-CHIEFS-BET",
+    "NBAFINALS25-OKC-BET",
+    "NBAFINALS25-BOS-BET",
+}
+
+# Drift-specific score cutoffs - simplified for delisting focus
+# Note: Inputs to scoring ('MC', 'Spot Volume', etc.) are expected in full dollar amounts, not millions.
+DRIFT_SCORE_CUTOFFS = {
+    'Market Cap Score': {
+        'MC': {'kind': 'exp', 'start': 1_000_000, 'end': 5_000_000_000, 'steps': 20}, # $1M to $5B
+    },
+    'Spot Vol Score': {
+        # Expects 'Spot Volume' (sum of avg daily vol) and 'Spot Vol Geomean' (geomean of top 3 avg daily vol) in full dollars
+        'Spot Volume': {'kind': 'exp', 'start': 10_000, 'end': 1_000_000_000, 'steps': 10}, # $10k to $1B
+        'Spot Vol Geomean': {'kind': 'exp', 'start': 10_000, 'end': 1_000_000_000, 'steps': 10}, # $10k to $1B
+    },
+    'Futures Vol Score': {
+         # Expects 'Fut Volume' (sum of avg daily vol) and 'Fut Vol Geomean' (geomean of top 3 avg daily vol) in full dollars
+        'Fut Volume': {'kind': 'exp', 'start': 10000, 'end': 1000000000, 'steps': 10}, # $10k to $1B
+        'Fut Vol Geomean': {'kind': 'exp', 'start': 10000, 'end': 1000000000, 'steps': 10}, # $10k to $1B
+    },
+    'Drift Activity Score': {
+        # Expects 'Volume on Drift' (estimated 30d vol) and 'OI on Drift' in full dollars
+        'Volume on Drift': {'kind': 'exp', 'start': 1_000, 'end': 500_000_000, 'steps': 10}, # $1k to $500M
+        'OI on Drift': {'kind': 'exp', 'start': 1_000, 'end': 500_000_000, 'steps': 10}, # $1k to $500M
+    },
+}
+
+# Market-specific base decimals overrides based on known values
+MARKET_BASE_DECIMALS = {
+    0: 9,  # SOL-PERP
+    1: 6,  # BTC-PERP - likely 6 decimals instead of 9 based on expected OI
+    2: 9,  # ETH-PERP
+}
 
 # Score cutoffs
 SCORE_CUTOFFS = {
@@ -131,6 +202,28 @@ def clean_symbol(symbol, exch=''):
         redone = redone.replace(suffix, '')
     redone = EXCH_TOKEN_ALIASES.get((redone, exch), redone)
     return TOKEN_ALIASES.get(redone, redone)
+
+def safe_count(obj) -> int:
+    """Safely count items in an object that may not directly support len()"""
+    if obj is None:
+        return 0
+    
+    # If object has values() method, count items through that
+    if hasattr(obj, 'values'):
+        return sum(1 for _ in obj.values())
+    
+    # If object is iterable but not a string, try counting its items
+    if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+        try:
+            return sum(1 for _ in obj)
+        except Exception:
+            pass
+    
+    # Last resort - try len, but catch errors
+    try:
+        return len(obj)
+    except Exception:
+        return 0
 
 def ensure_data_dir():
     """Ensure data directory exists for storing exchange data."""
@@ -755,6 +848,258 @@ def process_thunderhead_data(raw_thunder_data):
         logger.error(f"Error processing Thunderhead data: {str(e)}")
         raise
 
+# --- Drift Data Fetching Functions ---
+async def get_drift_data(drift_client, perp_map, user_map):
+    """Fetches data from Drift Protocol using provided maps, excluding ignored symbols."""
+    try:
+        logger.info("==> Fetching Drift Protocol market data")
+
+        # Initialize results list
+        drift_data = []
+
+        # Get all perp markets
+        perp_markets = list(perp_map.values())
+        markets_count = len(perp_markets)
+        if not perp_markets:
+            logger.error("==> No perp markets found in Drift data")
+            return None
+
+        logger.info(f"==> Found {markets_count} perp markets initially")
+
+        # Track processed markets
+        markets_processed = 0
+        user_count = safe_count(user_map)
+        logger.info(f"==> Processing {markets_count} markets across {user_count} users")
+
+        # Track long and short positions separately for each market
+        market_long_positions = {}  # Track sum of long positions
+        market_short_positions = {}  # Track sum of short positions
+        market_position_counts = {}
+
+        # First pass - gather OI for all markets
+        print(f"Aggregating positions from {user_count} users...")
+        processed_users = 0
+        for user_account in user_map.values():
+            try:
+                processed_users += 1
+                if processed_users % 5000 == 0:
+                    print(f"Processed {processed_users}/{user_count} users...")
+
+                # Try different methods to access perp positions
+                perp_positions = []
+
+                # Method 1: get_active_perp_positions
+                if hasattr(user_account, 'get_active_perp_positions'):
+                    try:
+                        perp_positions = user_account.get_active_perp_positions()
+                    except Exception as e:
+                        # Fallback to other methods
+                        pass
+
+                # Method 2: get_user_account.perp_positions
+                if not perp_positions and hasattr(user_account, 'get_user_account'):
+                    try:
+                        user_data = user_account.get_user_account()
+                        if hasattr(user_data, 'perp_positions'):
+                            # Filter for active positions only
+                            perp_positions = [pos for pos in user_data.perp_positions if pos.base_asset_amount != 0]
+                    except Exception as e:
+                        pass
+
+                # Method 3: direct perp_positions attribute
+                if not perp_positions and hasattr(user_account, 'perp_positions'):
+                    try:
+                        # Filter for active positions only
+                        perp_positions = [pos for pos in user_account.perp_positions if pos.base_asset_amount != 0]
+                    except Exception:
+                        pass
+
+                # Process each position
+                for position in perp_positions:
+                    if hasattr(position, 'market_index') and hasattr(position, 'base_asset_amount') and position.base_asset_amount != 0:
+                        market_idx = position.market_index
+                        base_amount = position.base_asset_amount
+
+                        # Initialize market tracking if first time seeing this market
+                        if market_idx not in market_long_positions:
+                            market_long_positions[market_idx] = 0
+                            market_short_positions[market_idx] = 0
+                            market_position_counts[market_idx] = 0
+
+                        # Add to appropriate direction (long or short)
+                        if base_amount > 0:  # Long position
+                            market_long_positions[market_idx] += base_amount
+                        else:  # Short position
+                            market_short_positions[market_idx] += abs(base_amount)
+
+                        market_position_counts[market_idx] += 1
+
+            except Exception as e:
+                logger.debug(f"Error processing user positions: {str(e)}")
+                continue
+
+        print(f"Found positions in {len(market_long_positions)} markets")
+        for market_idx in sorted(market_long_positions.keys()):
+            print(
+                f"Market {market_idx}: {market_position_counts[market_idx]} positions, "
+                f"Long={market_long_positions[market_idx]}, Short={market_short_positions[market_idx]}"
+            )
+
+        # Collect symbols for volume calculation
+        market_symbols = {}
+
+        # Process each perp market
+        ignored_count = 0
+        for market in perp_markets:
+            market_index = market.data.market_index
+
+            try:
+                # Get market config by index
+                market_config = next((cfg for cfg in mainnet_perp_market_configs if cfg and cfg.market_index == market_index), None)
+                if not market_config:
+                    logger.warning(f"==> No market config found for market index {market_index}")
+                    continue
+
+                # Get symbol
+                symbol = market_config.symbol
+                clean_sym = clean_symbol(symbol)
+
+                # Skip if symbol is in the ignored list
+                if symbol in IGNORED_SYMBOLS or clean_sym in IGNORED_SYMBOLS:
+                    logger.info(f"==> Skipping ignored market: {symbol} (Index: {market_index})")
+                    ignored_count += 1
+                    continue
+                
+                # Save symbol for volume calculation
+                market_symbols[market_index] = symbol
+                
+                markets_processed += 1
+
+                # Get max leverage (from initial margin ratio)
+                initial_margin_ratio = market.data.margin_ratio_initial / 10000
+                max_leverage = int(1 / initial_margin_ratio) if initial_margin_ratio > 0 else 0
+
+                # Get oracle price
+                oracle_price_data = drift_client.get_oracle_price_data_for_perp_market(market_index)
+                oracle_price = oracle_price_data.price / 1e6  # Convert from UI price
+
+                # Calculate OI as max(abs(long), abs(short))
+                long_amount = market_long_positions.get(market_index, 0)
+                short_amount = market_short_positions.get(market_index, 0)
+                base_oi = max(long_amount, short_amount)
+                positions_count = market_position_counts.get(market_index, 0)
+
+                # Get base decimals - try market first, then known mappings, then fall back to constants
+                base_decimals = MARKET_BASE_DECIMALS.get(market_index, 9)  # Use known mapping first
+
+                try:
+                    # Try to get decimals from market.data
+                    if hasattr(market.data, 'base_decimals'):
+                        base_decimals = market.data.base_decimals
+                        logger.info(f"==> Using market.data.base_decimals={base_decimals} for market {market_index}")
+                    # If not found, check if it's in market.data.amm
+                    elif hasattr(market.data, 'amm') and hasattr(market.data.amm, 'base_asset_decimals'):
+                        base_decimals = market.data.amm.base_asset_decimals
+                        logger.info(f"==> Using market.data.amm.base_asset_decimals={base_decimals} for market {market_index}")
+                    else:
+                        logger.info(f"==> Using default base_decimals={base_decimals} for market {market_index}")
+                except Exception as e:
+                    # If any error occurs, use the known mapping or default value
+                    logger.debug(f"==> Error getting base decimals for market {market_index}: {str(e)}")
+                    logger.info(f"==> Falling back to default base_decimals={base_decimals} for market {market_index}")
+                    pass
+
+                # Convert to human readable base units and to full dollar amount (not millions)
+                base_oi_readable = base_oi / (10 ** base_decimals)
+                oi_usd = base_oi_readable * oracle_price  # Full dollars
+
+                # Additional validation for known high-value markets like SOL-PERP
+                if market_index == 0 or clean_sym == 'SOL':  # SOL-PERP
+                    logger.warning(
+                        f"==> SPECIAL VALIDATION FOR SOL-PERP (market_index={market_index}): "
+                        f"OI=${oi_usd:,.2f}, positions={positions_count}, oracle_price=${oracle_price:,.2f}"
+                    )
+
+                    # Expected range verification (based on $90-100MM expected value)
+                    if oi_usd < 80000000 or oi_usd > 120000000:
+                        logger.warning(
+                            f"==> POTENTIAL OI CALCULATION ISSUE FOR SOL-PERP: "
+                            f"Calculated OI=${oi_usd:,.2f} outside expected range ($80M-$120M)"
+                        )
+
+                        # Double-check the base_decimals
+                        logger.warning(f"==> Validating base_decimals={base_decimals} for SOL-PERP")
+
+                        # Try alternative base_decimals values if suspect incorrect decimal scaling
+                        for test_decimals in [6, 9, 10]:
+                            test_base_oi = base_oi / (10 ** test_decimals)
+                            test_oi_usd = test_base_oi * oracle_price
+                            logger.warning(f"==> Test with base_decimals={test_decimals}: OI=${test_oi_usd:,.2f}")
+
+                            # If a more reasonable value is found, consider using it
+                            if 80000000 <= test_oi_usd <= 120000000:
+                                logger.warning(f"==> Potentially better base_decimals={test_decimals} found for SOL-PERP")
+                                if test_decimals != base_decimals:
+                                    logger.warning(f"==> Overriding base_decimals from {base_decimals} to {test_decimals}")
+                                    base_decimals = test_decimals
+                                    base_oi_readable = base_oi / (10 ** base_decimals)
+                                    oi_usd = base_oi_readable * oracle_price
+
+                # Log raw values for debugging
+                logger.info(
+                    f"==> Raw OI Calculation for Market {market_index} ({clean_sym}): "
+                    f"long_positions={long_amount}, short_positions={short_amount}, "
+                    f"base_oi={base_oi}, base_decimals={base_decimals}, "
+                    f"base_oi_readable={base_oi_readable}, oracle_price={oracle_price}, "
+                    f"oi_usd_raw={oi_usd}"
+                )
+
+                # Get funding rate (hourly)
+                funding_rate = market.data.amm.last_funding_rate / 1e6  # Convert to percentage
+                hourly_funding = funding_rate * 100  # As percentage
+
+                # We'll add volume data later from API
+                drift_data.append({
+                    'Symbol': clean_sym,
+                    'Market Index': market_index,
+                    'Max Lev. on Drift': max_leverage,
+                    'OI on Drift': oi_usd,  # Use raw value without sig_figs
+                    'Funding Rate % (1h)': sig_figs(hourly_funding, 3),
+                    'Oracle Price': oracle_price,
+                    'Volume on Drift': 0  # Will be updated with actual data
+                })
+            except Exception as e:
+                logger.error(f"==> Error processing market {market_index}: {str(e)}")
+                logger.error(traceback.format_exc())
+                continue
+
+        logger.info(f"==> Successfully processed {markets_processed} markets (skipped {ignored_count} ignored markets)")
+
+        if not drift_data:
+            logger.error("==> No Drift markets data was processed after filtering")
+            return None
+
+        # Fetch actual trade volume data for all markets
+        print("Fetching actual trade volume data from Drift API...")
+        
+        # Get volumes in bulk
+        volumes_by_symbol = await batch_calculate_market_volumes(list(market_symbols.values()))
+        
+        # Update drift_data with actual volume values
+        for item in drift_data:
+            market_index = item['Market Index']
+            symbol = market_symbols.get(market_index)
+            if symbol in volumes_by_symbol:
+                volume = volumes_by_symbol[symbol]
+                item['Volume on Drift'] = volume
+                logger.info(f"==> Updated market {market_index} ({symbol}) with actual volume: ${volume:,.2f}")
+        
+        return drift_data
+    except Exception as e:
+        logger.error(f"==> Error fetching Drift data: {str(e)}")
+        logger.error(traceback.format_exc())
+        return None
+
 def build_scores(df):
     """Build scoring data with error handling."""
     logger.info("Building scores...")
@@ -795,6 +1140,79 @@ def build_scores(df):
         logger.error(f"Error building scores: {str(e)}")
         raise
 
+def build_drift_scores(df):
+    """Calculates scores for Drift assets based on metrics."""
+    logger.info("Building Drift-specific scores...")
+    try:
+        output_scores = {}
+
+        # Calculate scores for each category
+        for score_category, category_details in DRIFT_SCORE_CUTOFFS.items():
+            output_scores[score_category] = pd.Series(0.0, index=df.index)
+
+            for score_var, thresholds in category_details.items():
+                if score_var not in df.columns:
+                     logger.warning(f"==> Scoring variable '{score_var}' not found for category '{score_category}'. Skipping.")
+                     continue
+
+                # Generate threshold points
+                point_thresholds = {}
+                steps = thresholds['steps']
+                start = thresholds['start']
+                end = thresholds['end']
+
+                if thresholds['kind'] == 'exp':
+                    # Exponential spacing
+                    if start <= 0:
+                        # Fallback to linear if start <= 0
+                        logger.warning(f"==> Exponential scale needs start > 0 for '{score_var}'. Using linear.")
+                        for k in range(steps + 1):
+                            point_thresholds[start + (end - start) * (k / steps)] = k
+                    else:
+                        ratio = end / start
+                        for k in range(steps + 1):
+                            point_thresholds[start * (ratio ** (k / steps))] = k
+                elif thresholds['kind'] == 'linear':
+                    # Linear spacing
+                    for k in range(steps + 1):
+                        point_thresholds[start + (end - start) * (k / steps)] = k
+
+                # Calculate partial score
+                score_name = f'Partial_Score_{score_var}'
+                output_scores[score_name] = pd.Series(0.0, index=df.index)
+
+                # Apply thresholds
+                if thresholds['kind'] == 'exp' or (thresholds['kind'] == 'linear' and start <= end):
+                    for threshold_val, points in sorted(point_thresholds.items()):
+                        output_scores[score_name].loc[df[score_var] >= threshold_val] = points
+                else: # Linear decreasing score
+                    for threshold_val, points in sorted(point_thresholds.items(), reverse=True):
+                        output_scores[score_name].loc[df[score_var] <= threshold_val] = points
+
+                # Add to category score
+                output_scores[score_category] += output_scores[score_name]
+
+        # Convert to DataFrame
+        output_df = pd.concat(output_scores, axis=1)
+
+        # Calculate final score
+        score_components = list(DRIFT_SCORE_CUTOFFS.keys())
+        output_df['Drift Score'] = output_df[score_components].sum(axis=1)
+
+        # Apply score boost for specific symbols
+        output_df['Drift Score'] = output_df['Drift Score'].add(
+            pd.Series(
+                [DRIFT_SCORE_BOOST_AMOUNT if symbol in DRIFT_SCORE_BOOST_SYMBOLS else 0 
+                 for symbol in output_df.index],
+                index=output_df.index
+            )
+        )
+
+        return output_df
+    except Exception as e:
+        logger.error(f"Error building drift scores: {str(e)}")
+        return pd.DataFrame(index=df.index)
+
 def generate_recommendation(row):
     """Generate recommendation with error handling."""
     try:
@@ -824,8 +1242,46 @@ def generate_recommendation(row):
         logger.error(f"Error generating recommendation: {str(e)}")
         return 'Error'
 
-async def get_list_recommendations():
-    """Main function to get listing recommendations."""
+def generate_delist_recommendation(row):
+    """Generates recommendation for delisting or changing leverage based on score and current leverage."""
+    try:
+        current_leverage = int(0 if pd.isna(row['Max Lev. on Drift']) else row['Max Lev. on Drift'])
+        score = row['Score']
+
+        # No recommendation needed if not listed on Drift
+        if current_leverage == 0:
+            return 'Not Listed'
+
+        # Determine relevant score boundaries
+        # Find the largest key in SCORE_LB that is less than or equal to the current leverage
+        lower_bound_key = 0
+        for k in sorted(SCORE_LB.keys()):
+            if k <= current_leverage:
+                lower_bound_key = k
+            else:
+                break
+
+        # Check if score is below lower bound
+        is_below_lower_bound = score < SCORE_LB[lower_bound_key]
+
+        # Generate recommendation
+        if is_below_lower_bound:
+            if current_leverage > 5: # If leverage is higher than 5x and score is low, recommend decrease
+                return 'Decrease Leverage'
+            else: # If leverage is 5x or lower and score is low, recommend delist
+                return 'Delist'
+        else:
+            return 'Keep'  # No change recommended
+    except Exception as e:
+        logger.error(f"Error generating delist recommendation: {str(e)}")
+        return 'Error'
+
+async def get_list_recommendations(request=None):
+    """Main function to get listing recommendations.
+    
+    Args:
+        request: Optional BackendRequest object to access Drift data
+    """
     global last_recommendation_data, last_recommendation_time
     
     # Check if we have cached recommendations less than 24 hours old
@@ -885,51 +1341,184 @@ async def get_list_recommendations():
         df['Symbol'] = df.index
         df['Max Lev.'] = 0  # Default to 0 as this is for unlisted tokens
         
-        # Calculate scores and recommendations
-        df = pd.concat([df, build_scores(df)], axis=1)
+        # Try to get Drift data if available in the backend state
+        drift_data = None
+        try:
+            # Access the backend state directly from the request object if it exists
+            backend_state = getattr(request, 'state', None)
+            if backend_state:
+                backend_state = getattr(backend_state, 'backend_state', None)
+            
+            if backend_state and hasattr(backend_state, 'vat') and hasattr(backend_state, 'perp_map') and hasattr(backend_state, 'user_map') and hasattr(backend_state, 'dc'):
+                logger.info("==> Fetching Drift protocol data")
+                print("Fetching Drift protocol data...")
+                
+                drift_data = await get_drift_data(
+                    backend_state.dc,
+                    backend_state.perp_map,
+                    backend_state.user_map
+                )
+                
+                if drift_data:
+                    # Create DataFrame from Drift data
+                    drift_df = pd.DataFrame(drift_data).set_index('Symbol')
+                    logger.info(f"==> Found {len(drift_df)} tokens on Drift platform")
+                    print(f"Found {len(drift_df)} tokens on Drift platform")
+                    
+                    # Update the main DataFrame with info about currently listed tokens
+                    for symbol in drift_df.index:
+                        if symbol in df.index:
+                            # Update leverage for tokens already in our dataset
+                            df.loc[symbol, 'Max Lev.'] = drift_df.loc[symbol, 'Max Lev. on Drift']
+                            # Copy other relevant fields (OI and Volume are stored as full dollars in drift_df)
+                            df.loc[symbol, 'OI on Drift'] = drift_df.loc[symbol, 'OI on Drift']
+                            df.loc[symbol, 'Volume on Drift'] = drift_df.loc[symbol, 'Volume on Drift']
+                            df.loc[symbol, 'Funding Rate % (1h)'] = drift_df.loc[symbol, 'Funding Rate % (1h)']
+                            
+                            # Also set the OI $m and Volume $m fields for consistency (in millions)
+                            if 'OI $m' in df.columns and df.loc[symbol, 'OI $m'] == 0:
+                                df.loc[symbol, 'OI $m'] = drift_df.loc[symbol, 'OI on Drift'] / 1e6
+                            if 'Volume $m' in df.columns and df.loc[symbol, 'Volume $m'] == 0:
+                                df.loc[symbol, 'Volume $m'] = drift_df.loc[symbol, 'Volume on Drift'] / 1e6
+                        else:
+                            # Add new row for tokens only on Drift
+                            new_row = pd.Series(0, index=df.columns)
+                            new_row['Symbol'] = symbol
+                            new_row['Max Lev.'] = drift_df.loc[symbol, 'Max Lev. on Drift']
+                            new_row['OI on Drift'] = drift_df.loc[symbol, 'OI on Drift']
+                            new_row['Volume on Drift'] = drift_df.loc[symbol, 'Volume on Drift']
+                            new_row['Funding Rate % (1h)'] = drift_df.loc[symbol, 'Funding Rate % (1h)']
+                            new_row['OI $m'] = drift_df.loc[symbol, 'OI on Drift'] / 1e6
+                            new_row['Volume $m'] = drift_df.loc[symbol, 'Volume on Drift'] / 1e6
+                            df = pd.concat([df, pd.DataFrame([new_row]).set_index('Symbol')])
+                            
+                    # Also prepare data for the drift-specific scoring
+                    # Create MC column from MC $m for Drift scoring
+                    df['MC'] = df['MC $m'] * 1e6
+                    
+                    # Create columns needed for Drift scoring - convert from $m to full dollars if they exist
+                    vol_columns = {
+                        'Spot Volume': 'Spot Volume $m',
+                        'Spot Vol Geomean': 'Spot Vol Geomean $m',
+                        'Fut Volume': 'Fut Volume $m',
+                        'Fut Vol Geomean': 'Fut Vol Geomean $m'
+                    }
+                    
+                    for full_col, m_col in vol_columns.items():
+                        if m_col in df.columns:
+                            df[full_col] = df[m_col] * 1e6
+                    
+                    logger.info("==> Successfully merged Drift data with other data sources")
+                    print("Successfully merged Drift data with other data sources")
+                else:
+                    logger.warning("==> Failed to get Drift data or no markets found")
+                    print("Failed to get Drift data or no markets found")
+            else:
+                logger.warning("==> Backend state not available, skipping Drift data")
+                print("Backend state not available, skipping Drift data")
+        except Exception as e:
+            logger.error(f"==> Error fetching Drift data: {str(e)}")
+            logger.error(traceback.format_exc())
+            print(f"Error fetching Drift data: {str(e)}")
+        
+        # Calculate scores and list recommendations
+        listing_scores_df = build_scores(df)
+        df = pd.concat([df, listing_scores_df], axis=1)
         df['Recommendation'] = df.apply(generate_recommendation, axis=1)
         
-        # Filter to only keep tokens with 'List' or 'Increase Leverage' recommendation
-        list_candidates = df[df['Recommendation'].isin(['List', 'Increase Leverage'])].copy()
+        # Calculate drift-specific scores and delist recommendations if drift data is available
+        if drift_data:
+            # Build drift-specific scores
+            drift_scores_df = build_drift_scores(df)
+            df = pd.concat([df, drift_scores_df], axis=1)
+            
+            # Generate delist recommendations using the Drift score
+            # First create a temporary series with the Drift score in the 'Score' column for the recommendation function
+            temp_series = df.copy()
+            temp_series['Score'] = temp_series['Drift Score']
+            df['Delist Recommendation'] = temp_series.apply(generate_delist_recommendation, axis=1)
+        else:
+            # If no drift data, mark all as "Not Listed"
+            df['Delist Recommendation'] = 'Not Listed'
+        
+        # Filter to keep tokens with actionable recommendations
+        actionable_df = df[
+            (df['Recommendation'].isin(['List', 'Increase Leverage'])) |  # List recommender recommendations
+            (df['Delist Recommendation'].isin(['Delist', 'Decrease Leverage']))  # Delist recommendations
+        ].copy()
         
         # Sort by Score in descending order
-        df_for_main_data = list_candidates.sort_values('Score', ascending=False)[OUTPUT_COLS]
+        df_for_main_data = actionable_df.sort_values('Score', ascending=False)
         
-        # Format values with sig_figs
+        # Prepare columns for output
+        output_cols = list(OUTPUT_COLS)  # Start with standard output columns
+        
+        # Add Drift-specific columns if available
+        if 'Delist Recommendation' in df_for_main_data.columns:
+            if 'Delist Recommendation' not in output_cols:
+                output_cols.append('Delist Recommendation')
+            if 'Funding Rate % (1h)' not in output_cols:
+                output_cols.append('Funding Rate % (1h)')
+            if 'Drift Score' not in output_cols:
+                output_cols.append('Drift Score')
+        
+        # Filter columns to only those that exist in the DataFrame
+        output_cols = [col for col in output_cols if col in df_for_main_data.columns]
+        
+        # Format values with sig_figs - convert columns to proper display format
         for c in df_for_main_data.columns:
             if str(df_for_main_data[c].dtype) in ['int64', 'float64']:
                 df_for_main_data[c] = df_for_main_data[c].map(sig_figs)
         
         # Calculate summary stats
         total_tokens = len(df)
+        # List recommendation stats
         list_tokens = len(df[df['Recommendation'] == 'List'])
         increase_lev_tokens = len(df[df['Recommendation'] == 'Increase Leverage'])
         monitor_tokens = len(df[df['Recommendation'] == 'Monitor'])
         
+        # Delist recommendation stats
+        delist_tokens = len(df[df['Delist Recommendation'] == 'Delist'])
+        decrease_lev_tokens = len(df[df['Delist Recommendation'] == 'Decrease Leverage'])
+        keep_tokens = len(df[df['Delist Recommendation'] == 'Keep'])
+        not_listed_tokens = len(df[df['Delist Recommendation'] == 'Not Listed'])
+        
         # Prepare results for API response
+        drift_slot = None
+        if 'backend_state' in locals() and backend_state and hasattr(backend_state, 'last_oracle_slot'):
+            drift_slot = backend_state.last_oracle_slot
+            
         results = {
-            "slot": None,  # Not applicable for this API
-            "results": df_for_main_data.reset_index().to_dict(orient='records'),
+            "slot": drift_slot,
+            "results": df_for_main_data[output_cols].reset_index().to_dict(orient='records'),
             "summary": {
                 "total_tokens": total_tokens,
                 "list_tokens": list_tokens,
                 "increase_leverage_tokens": increase_lev_tokens,
                 "monitor_tokens": monitor_tokens,
-                "top_candidates": list_candidates.sort_values('Score', ascending=False).head(10).index.tolist()
+                "delist_tokens": delist_tokens,
+                "decrease_leverage_tokens": decrease_lev_tokens,
+                "keep_tokens": keep_tokens,
+                "not_listed_tokens": not_listed_tokens,
+                "listed_on_drift": total_tokens - not_listed_tokens,
+                "top_candidates": actionable_df.sort_values('Score', ascending=False).head(10).index.tolist()
             },
-            "score_boundaries": SCORE_UB
+            "score_boundaries": {
+                "upper": SCORE_UB,  # For listing/increasing leverage
+                "lower": SCORE_LB   # For delisting/decreasing leverage
+            }
         }
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        logger.info(f"==> Completed generating list recommendations in {duration:.2f} seconds")
-        print(f"Completed generating list recommendations in {duration:.2f} seconds")
+        logger.info(f"==> Completed generating list/delist recommendations in {duration:.2f} seconds")
+        print(f"Completed generating list/delist recommendations in {duration:.2f} seconds")
         
         # Cache the results
         last_recommendation_data = {
             "status": "success",
-            "message": "Listing recommendations generated successfully",
+            "message": "Listing and delisting recommendations generated successfully",
             "data": results
         }
         last_recommendation_time = current_time
@@ -947,11 +1536,38 @@ async def get_list_recommendations():
 # --- API Endpoints ---
 @router.get("/recommendations")
 async def get_recommendations(request: BackendRequest):
-    """Get listing recommendations for potential new markets."""
-    logger.info("Received request for listing recommendations")
+    """Get listing and delisting recommendations for markets."""
+    logger.info("Received request for listing and delisting recommendations")
+    print("Processing listing and delisting recommendations request")
     
     try:
-        result = await get_list_recommendations()
+        # Verify backend state for Drift data
+        if hasattr(request, 'state') and hasattr(request.state, 'backend_state'):
+            backend_state = request.state.backend_state
+            if backend_state:
+                drift_attrs_available = all([
+                    hasattr(backend_state, attr) 
+                    for attr in ['vat', 'dc', 'perp_map', 'user_map']
+                ])
+                if drift_attrs_available:
+                    # Count perp markets and users using the safe_count helper
+                    perp_markets_count = safe_count(backend_state.perp_map) if hasattr(backend_state, 'perp_map') else 0
+                    user_count = safe_count(backend_state.user_map) if hasattr(backend_state, 'user_map') else 0
+                    
+                    logger.info(f"Drift data available, perp markets: {perp_markets_count}, users: {user_count}")
+                    print(f"Drift data available, perp markets: {perp_markets_count}, users: {user_count}")
+                else:
+                    logger.warning("Drift data partially available or missing required attributes")
+                    print("Drift data partially available or missing required attributes")
+            else:
+                logger.warning("Backend state is empty")
+                print("Backend state is empty")
+        else:
+            logger.warning("Request does not have backend state attribute")
+            print("Request does not have backend state attribute")
+            
+        # Generate recommendations with the request object for accessing Drift data
+        result = await get_list_recommendations(request)
         return result
     except Exception as e:
         logger.error(f"API error: {str(e)}")
@@ -959,6 +1575,192 @@ async def get_recommendations(request: BackendRequest):
         return {
             "status": "error",
             "message": f"API error: {str(e)}",
+            "data": None
+        }
+
+@router.get("/single_market_recommendation")
+async def get_single_market_recommendation(
+    request: BackendRequest,
+    market_index: int = Query(..., description="Market index to analyze")
+):
+    """Get detailed recommendation for a single market, showing all intermediate calculations."""
+    print(f"\n===> SINGLE MARKET RECOMMENDATION API CALL RECEIVED FOR MARKET INDEX {market_index} <===")
+    logger.info(f"==> [api] Received single market recommendation request for market index {market_index}")
+
+    try:
+        # Check if backend state is available
+        if not hasattr(request, 'state') or not hasattr(request.state, 'backend_state') or not request.state.backend_state:
+            logger.error("==> Backend state not available for single market analysis")
+            return {
+                "status": "error",
+                "message": "Backend state not available",
+                "data": None
+            }
+
+        # Check if Drift client is available
+        backend_state = request.state.backend_state
+        if not hasattr(backend_state, 'vat') or not hasattr(backend_state, 'dc'):
+            logger.error("==> Drift client not available in backend state")
+            return {
+                "status": "error",
+                "message": "Drift client not available",
+                "data": None
+            }
+
+        # Check if perp markets are available
+        if not hasattr(backend_state.vat, 'perp_markets'):
+            logger.error("==> Perp markets not available in vat")
+            return {
+                "status": "error",
+                "message": "Perp markets not available",
+                "data": None
+            }
+
+        # Check if this market exists
+        perp_market = backend_state.vat.perp_markets.get(market_index)
+        if not perp_market:
+            logger.error(f"==> Market with index {market_index} not found")
+            return {
+                "status": "error",
+                "message": f"Market with index {market_index} not found",
+                "data": None
+            }
+        
+        # Get market config with proper error handling
+        try:
+            market_config = next((cfg for cfg in mainnet_perp_market_configs if cfg and cfg.market_index == market_index), None)
+            if not market_config:
+                logger.error(f"==> Market config for index {market_index} not found")
+                return {
+                    "status": "error",
+                    "message": f"Market config for index {market_index} not found",
+                    "data": None
+                }
+            
+            # Get symbol
+            symbol = market_config.symbol
+            clean_sym = clean_symbol(symbol)
+            
+            logger.info(f"==> Processing single market recommendation for {clean_sym} (index: {market_index})")
+        except Exception as e:
+            logger.error(f"==> Error getting market config: {str(e)}")
+            return {
+                "status": "error",
+                "message": f"Error getting market config: {str(e)}",
+                "data": None
+            }
+        
+        # Check if the market symbol is in the ignored list
+        if symbol in IGNORED_SYMBOLS or clean_sym in IGNORED_SYMBOLS:
+            logger.error(f"==> Market {market_index} ({symbol}) is explicitly ignored")
+            return {
+                "status": "error",
+                "message": f"Market {market_index} ({symbol}) is explicitly ignored and cannot be analyzed.",
+                "data": None
+            }
+            
+        # Get market recommendations data
+        logger.info(f"==> Getting recommendations for {clean_sym}")
+        try:
+            # Get full recommendations data that includes this market
+            recommendations_result = await get_list_recommendations(request)
+            if recommendations_result["status"] != "success":
+                return recommendations_result
+                
+            # Extract the data for this specific market
+            market_data = None
+            if "results" in recommendations_result.get("data", {}):
+                for item in recommendations_result["data"]["results"]:
+                    if item.get("Symbol") == clean_sym:
+                        market_data = item
+                        break
+                    
+            # If market not found in results, try to get its raw data
+            if not market_data:
+                logger.info(f"==> Market {clean_sym} not found in recommendations, fetching raw data")
+                try:
+                    if (hasattr(backend_state, 'perp_map') and 
+                        hasattr(backend_state, 'user_map') and 
+                        hasattr(backend_state, 'dc')):
+                        
+                        drift_data = await get_drift_data(
+                            backend_state.dc,
+                            backend_state.perp_map,
+                            backend_state.user_map
+                        )
+                        
+                        if drift_data:
+                            for item in drift_data:
+                                if item.get("Symbol") == clean_sym:
+                                    market_data = item
+                                    break
+                    else:
+                        logger.warning(f"==> Cannot fetch raw Drift data, missing required attributes")
+                except Exception as e:
+                    logger.error(f"==> Error fetching raw Drift data: {str(e)}")
+        except Exception as e:
+            logger.error(f"==> Error getting recommendations: {str(e)}")
+            market_data = None
+                        
+        # Get detailed information from the market object with error handling
+        try:
+            market_details = {
+                "symbol": clean_sym,
+                "original_symbol": symbol,
+                "market_index": market_index,
+            }
+            
+            # Add attributes with proper error handling
+            if hasattr(perp_market, 'data'):
+                if hasattr(perp_market.data, 'margin_ratio_initial'):
+                    market_details["max_leverage"] = perp_market.data.margin_ratio_initial / 10000
+                
+                market_details["base_decimals"] = getattr(perp_market.data, 'base_decimals', 
+                                                         MARKET_BASE_DECIMALS.get(market_index, 9))
+                
+                if hasattr(perp_market.data, 'amm') and hasattr(perp_market.data.amm, 'last_funding_rate'):
+                    market_details["funding_rate"] = perp_market.data.amm.last_funding_rate / 1e6
+            
+            # Get oracle price with error handling
+            if hasattr(backend_state.dc, 'get_oracle_price_data_for_perp_market'):
+                try:
+                    oracle_price_data = backend_state.dc.get_oracle_price_data_for_perp_market(market_index)
+                    if oracle_price_data and hasattr(oracle_price_data, 'price'):
+                        market_details["oracle_price"] = oracle_price_data.price / 1e6
+                except Exception as e:
+                    logger.error(f"==> Error getting oracle price: {str(e)}")
+                    market_details["oracle_price"] = None
+            
+            logger.info(f"==> Successfully collected market details for {clean_sym}")
+        except Exception as e:
+            logger.error(f"==> Error collecting market details: {str(e)}")
+            market_details = {
+                "symbol": clean_sym,
+                "original_symbol": symbol,
+                "market_index": market_index,
+                "error": str(e)
+            }
+            
+        return {
+            "status": "success",
+            "message": f"Single market data for {clean_sym}",
+            "data": {
+                "slot": getattr(backend_state, 'last_oracle_slot', None),
+                "market_index": market_index,
+                "symbol": clean_sym,
+                "market_details": market_details,
+                "recommendation_data": market_data
+            }
+        }
+    except Exception as e:
+        print(f"CRITICAL ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        logger.error(f"==> [api] Error generating single market recommendation: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "message": f"Error generating single market recommendation: {str(e)}",
             "data": None
         }
 
@@ -975,3 +1777,148 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# --- Drift API Volume Calculation Functions ---
+async def fetch_api_page(session, url: str, retries: int = 5):
+    """
+    Fetch a single page from the Drift API with rate limiting and retries.
+    """
+    global last_request_time
+    
+    for attempt in range(retries):
+        # Apply rate limiting
+        async with rate_limit_lock:
+            current_time = time.time()
+            wait_time = API_RATE_LIMIT_INTERVAL - (current_time - last_request_time)
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            last_request_time = time.time()
+        
+        try:
+            async with session.get(url, headers=DRIFT_DATA_API_HEADERS, timeout=10) as response:
+                if response.status != 200:
+                    logger.warning(f"API request failed: {url}, status: {response.status}")
+                    if attempt < retries - 1:
+                        # Exponential backoff
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    return {"success": False, "records": [], "meta": {"totalRecords": 0}}
+                
+                data = await response.json()
+                return data
+        except Exception as e:
+            logger.warning(f"Error fetching {url}: {str(e)}")
+            if attempt < retries - 1:
+                # Exponential backoff
+                await asyncio.sleep(2 ** attempt)
+                continue
+            return {"success": False, "records": [], "meta": {"totalRecords": 0}}
+    
+    return {"success": False, "records": [], "meta": {"totalRecords": 0}}
+
+async def fetch_market_trades(session, symbol: str, start_date: datetime, end_date: datetime = None):
+    """
+    Fetch all trades for a market within the specified date range.
+    """
+    if end_date is None:
+        end_date = datetime.now()
+    
+    current_date = start_date
+    all_trades = []
+    
+    while current_date <= end_date:
+        year, month, day = current_date.year, current_date.month, current_date.day
+        
+        # Make sure DRIFT_DATA_API_BASE_URL is available
+        if not DRIFT_DATA_API_BASE_URL:
+            logger.error("DRIFT_DATA_API_BASE_URL environment variable not set")
+            return []
+            
+        url = f"{DRIFT_DATA_API_BASE_URL}/market/{symbol}/trades/{year}/{month}/{day}?format=json"
+        
+        logger.debug(f"Fetching trades for {symbol} on {year}/{month}/{day}")
+        
+        # Fetch first page
+        data = await fetch_api_page(session, url)
+        
+        if data["success"] and "records" in data:
+            all_trades.extend(data["records"])
+            
+            # Handle pagination if needed
+            page = 1
+            total_pages = data.get("meta", {}).get("totalPages", 1)
+            
+            while page < total_pages and page < 10:  # Limit to 10 pages per day to avoid excessive requests
+                page += 1
+                paginated_url = f"{url}&page={page}"
+                page_data = await fetch_api_page(session, paginated_url)
+                
+                if page_data["success"] and "records" in page_data:
+                    all_trades.extend(page_data["records"])
+                else:
+                    break
+        
+        # Move to next day
+        current_date += timedelta(days=1)
+    
+    return all_trades
+
+async def calculate_market_volume(symbol: str):
+    """
+    Calculate the total trading volume for a market over the past 30 days.
+    
+    Args:
+        symbol: Market symbol (e.g., "SOL-PERP")
+        
+    Returns:
+        Total volume in USD (float)
+    """
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=DAYS_TO_CONSIDER)
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            trades = await fetch_market_trades(session, symbol, start_date, end_date)
+            
+            # Sum up the quote asset amounts from all filled trades
+            total_volume = 0.0
+            for trade in trades:
+                try:
+                    quote_amount = float(trade.get("quoteAssetAmountFilled", 0))
+                    total_volume += quote_amount
+                except (ValueError, TypeError):
+                    continue
+            
+            logger.info(f"Calculated {DAYS_TO_CONSIDER}-day volume for {symbol}: ${total_volume:,.2f}")
+            return total_volume
+    except Exception as e:
+        logger.error(f"Error calculating volume for {symbol}: {str(e)}")
+        logger.error(traceback.format_exc())
+        return 0.0
+
+async def batch_calculate_market_volumes(symbols: List[str]):
+    """
+    Calculate volumes for multiple markets in parallel with rate limiting.
+    
+    Args:
+        symbols: List of market symbols
+        
+    Returns:
+        Dictionary mapping symbols to their volumes
+    """
+    logger.info(f"Calculating actual trade volumes for {len(symbols)} markets")
+    print(f"Fetching actual 30-day trade volumes from Drift API for {len(symbols)} markets...")
+    
+    volumes = {}
+    semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+    
+    async def fetch_with_semaphore(symbol):
+        async with semaphore:
+            volume = await calculate_market_volume(symbol)
+            volumes[symbol] = volume
+            print(f"Fetched {symbol} volume: ${volume:,.2f}")
+    
+    tasks = [fetch_with_semaphore(symbol) for symbol in symbols]
+    await asyncio.gather(*tasks)
+    
+    return volumes
