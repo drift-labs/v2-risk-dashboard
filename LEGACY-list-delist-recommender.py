@@ -12,9 +12,9 @@ import pandas as pd  # For data manipulation and analysis, primarily using DataF
 
 # Define a set of stablecoin symbols to exclude from analysis
 STABLE_COINS = {
-            "USDC", 'FDUSD', "USDT", 'DAI', 'USDB', 'USDE', 
+            "USDC", 'FDUSD', "USDT", 'DAI', 'USDB', 'USDE',
             'TUSD', 'USR', 'USDY', 'PYUSD', 'USDe', 'USDS'
-            }
+                }
 
 # Define the number of past days of data to consider for calculations
 DAYS_TO_CONSIDER = 30
