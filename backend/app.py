@@ -23,6 +23,7 @@ from backend.api import (
     vaults,
     delist_recommender,
     list_recommender,
+    gecko_market_recommender,
 )
 from backend.middleware.cache_middleware import CacheMiddleware
 from backend.middleware.readiness import ReadinessMiddleware
@@ -90,7 +91,7 @@ app.include_router(vaults.router, prefix="/api/vaults", tags=["vaults"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(delist_recommender.router, prefix="/api/delist-recommender", tags=["delist-recommender"])
 app.include_router(list_recommender.router, prefix="/api/list-recommender", tags=["list-recommender"])
-
+app.include_router(gecko_market_recommender.router, prefix="/api/gecko-market-recommender", tags=["gecko-market-recommender"])
 
 # NOTE: All other routes should be in /api/* within the /api folder. Routes outside of /api are not exposed in k8s
 @app.get("/")
