@@ -6,13 +6,46 @@ import aiofiles
 import logging
 import time
 import traceback
+import math
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union, Any
 # Assuming DriftPy and related types are available
-# from driftpy.drift_client import DriftClient
-# from driftpy.constants.numeric_constants import * # Example
-# from driftpy.types import MarketType, OraclePriceData # etc.
+from driftpy.constants.config import mainnet_perp_market_configs
+from driftpy.types import MarketType, OraclePriceData
+from driftpy.drift_client import DriftClient
+from driftpy.constants.numeric_constants import * 
+from driftpy.constants import BASE_PRECISION, PRICE_PRECISION, SPOT_BALANCE_PRECISION
+from driftpy.pickle.vat import Vat
+from driftpy.types import is_variant
+from solders.pubkey import Pubkey
+from anchorpy import Provider
+
+from fastapi import APIRouter
+from backend.state import BackendRequest
+
+# Constants for market data
+IGNORED_SYMBOLS = set()  # Add any symbols to ignore
+MARKET_BASE_DECIMALS = {
+    0: 9,  # SOL-PERP
+    1: 6,  # BTC-PERP
+    2: 6,  # ETH-PERP
+    # Add other known market decimals
+}
+
+# Add after existing constants
+DRIFT_PROGRAM_ID = Pubkey.from_string(os.getenv("DRIFT_PROGRAM_ID", "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH"))
+
+# Time window for data analysis
+DAYS_TO_CONSIDER = 30  # Number of days to look back for volume data
+
+def clean_symbol(symbol: str) -> str:
+    """Clean and standardize market symbol."""
+    if not symbol:
+        return ""
+    # Remove common suffixes and convert to uppercase
+    clean = symbol.upper().replace("-PERP", "").replace("/USD", "").replace("USD", "")
+    return clean.strip()
 
 # --- Configuration ---
 logging.basicConfig(
@@ -22,7 +55,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("market_data_engine")
 
-MARKET_DATA_FILE = Path("../../cache/market_data.json") # Store in project root's cache directory
+MARKET_DATA_FILE = Path("cache/market_data.json")  # Store in project root's cache directory
 
 # Reuse configurations from the original script (API keys, URLs, rate limits, etc.)
 COINGECKO_API_BASE_URL = "https://api.coingecko.com/api/v3"
@@ -103,7 +136,7 @@ def get_default_market_structure(symbol: str) -> dict:
             "coingecko_name": None, "coingecko_id": None, "coingecko_image_url": None,
             "coingecko_current_price": None, "coingecko_market_cap_rank": None,
             "coingecko_market_cap": None, "coingecko_fully_diluted_valuation": None,
-            "coingecko_total_volume_24h": None, "coingecko_global_volume_30d_avg": None,
+            "coingecko_total_volume_24h": None, "coingecko_30d_volume_total": None,
             "coingecko_mc_derived": None, "coingecko_circulating_supply": None,
             "coingecko_total_supply": None, "coingecko_max_supply": None,
             "coingecko_ath_price": None, "coingecko_ath_change_percentage": None
@@ -272,7 +305,11 @@ async def fetch_all_coingecko_market_data(session: aiohttp.ClientSession) -> dic
 
 
 async def fetch_coin_volume(session: aiohttp.ClientSession, coin_id: str) -> Optional[float]:
-    """Helper to fetch 30d volume data for a single coin."""
+    """Helper to fetch 30d volume data for a single coin.
+    
+    Returns:
+        float: Total volume over 30 days or None if data fetch fails
+    """
     try:
         # Request 30 days of market data with exact parameters from the successful example
         params = {
@@ -296,27 +333,32 @@ async def fetch_coin_volume(session: aiohttp.ClientSession, coin_id: str) -> Opt
             logger.warning(f"Empty volumes list for {coin_id}")
             return None
         
-        # Calculate average
-        avg_volume = sum(volumes) / len(volumes)
-        logger.info(f"Calculated 30d avg volume for {coin_id}: ${avg_volume:,.2f}")
-        return avg_volume
+        # Calculate total volume
+        total_volume = sum(volumes)
+        logger.info(f"Calculated 30d total volume for {coin_id}: ${total_volume:,.2f}")
+        
+        return total_volume
     
     except Exception as e:
         logger.error(f"Error fetching volume data for {coin_id}: {e}")
         raise  # Re-raise to be caught by gather
 
 async def fetch_all_coingecko_volumes(session: aiohttp.ClientSession, coin_ids: list) -> dict:
-    """Fetches 30d volume data from CG /coins/{id}/market_chart and calculates average."""
-    volume_averages = {}  # Dict: coingecko_id -> avg_30d_volume
+    """Fetches 30d volume data from CG /coins/{id}/market_chart.
+    
+    Returns:
+        dict: Dictionary mapping coingecko_id to total_30d_volume
+    """
+    volume_data = {}  # Dict: coingecko_id -> total_30d_volume
     logger.info(f"Fetching 30d volume data from CoinGecko for {len(coin_ids)} coins...")
     
     # Process coins one by one to avoid rate limiting issues
     for coin_id in coin_ids:
         try:
-            avg_volume = await fetch_coin_volume(session, coin_id)
-            if avg_volume is not None:
-                volume_averages[coin_id] = avg_volume
-                logger.info(f"Processed 30d volume for {coin_id}: ${avg_volume:,.2f}")
+            total_volume = await fetch_coin_volume(session, coin_id)
+            if total_volume is not None:
+                volume_data[coin_id] = total_volume
+                logger.info(f"Processed 30d volume for {coin_id}: ${total_volume:,.2f}")
             
             # Respect rate limiting between requests
             await asyncio.sleep(COINGECKO_RATE_LIMIT_DELAY)
@@ -325,166 +367,408 @@ async def fetch_all_coingecko_volumes(session: aiohttp.ClientSession, coin_ids: 
             logger.warning(f"Error processing volume for {coin_id}: {str(e)}")
             continue
     
-    logger.info(f"Successfully fetched 30d volume data for {len(volume_averages)}/{len(coin_ids)} coins")
-    return volume_averages
+    logger.info(f"Successfully fetched 30d volume data for {len(volume_data)}/{len(coin_ids)} coins")
+    return volume_data
 
+
+async def get_drift_data(vat: Vat):
+    """Fetches data from Drift Protocol using Vat."""
+    try:
+        logger.info("==> Fetching Drift Protocol market data")
+
+        # Initialize results list
+        drift_data = []
+
+        # Track long and short positions separately for each market
+        market_long_positions = {}   # Track sum of long positions
+        market_short_positions = {}  # Track sum of short positions
+        market_position_counts = {}  # Track number of positions
+
+        # Process each user's positions
+        processed_users = 0
+        logger.info("==> Processing positions from users via Vat...")
+        
+        for user in vat.users.values():
+            try:
+                processed_users += 1
+                if processed_users % 5000 == 0:
+                    logger.info(f"Processed {processed_users} users...")
+
+                # Get perp positions directly from user account
+                for position in user.get_user_account().perp_positions:
+                    if position.base_asset_amount != 0:
+                        market_idx = position.market_index
+                        base_amount = position.base_asset_amount
+
+                        # Initialize market tracking if first time seeing this market
+                        if market_idx not in market_long_positions:
+                            market_long_positions[market_idx] = 0
+                            market_short_positions[market_idx] = 0
+                            market_position_counts[market_idx] = 0
+
+                        # Add to appropriate direction (long or short)
+                        if base_amount > 0:  # Long position
+                            market_long_positions[market_idx] += base_amount
+                        else:  # Short position
+                            market_short_positions[market_idx] += abs(base_amount)
+
+                        market_position_counts[market_idx] += 1
+
+            except Exception as e:
+                logger.debug(f"Error processing user positions: {str(e)}")
+                continue
+
+        logger.info(f"Found positions in {len(market_long_positions)} markets")
+
+        # Process each market
+        for market_index in market_long_positions.keys():
+            try:
+                # Get market config
+                market_config = next((cfg for cfg in mainnet_perp_market_configs if cfg and cfg.market_index == market_index), None)
+                if not market_config:
+                    continue
+
+                # Get symbol and clean it
+                symbol = market_config.symbol
+                clean_sym = clean_symbol(symbol)
+
+                # Skip ignored symbols
+                if symbol in IGNORED_SYMBOLS or clean_sym in IGNORED_SYMBOLS:
+                    continue
+
+                # Get oracle price directly from vat
+                market_price = vat.perp_oracles.get(market_index)
+                if market_price is None:
+                    continue
+
+                oracle_price = market_price.price / PRICE_PRECISION
+
+                # Get base decimals
+                base_decimals = MARKET_BASE_DECIMALS.get(market_index, 9)
+
+                # Calculate OI
+                long_amount = market_long_positions[market_index]
+                short_amount = market_short_positions[market_index]
+                base_oi = max(long_amount, short_amount)
+                base_oi_readable = base_oi / (10 ** base_decimals)
+                oi_usd = base_oi_readable * oracle_price
+
+                # Get market from vat
+                market = vat.perp_markets.get(market_index)
+                if not market:
+                    continue
+
+                # Get max leverage
+                initial_margin_ratio = market.data.margin_ratio_initial / 10000
+                max_leverage = int(1 / initial_margin_ratio) if initial_margin_ratio > 0 else 0
+
+                # Get funding rate
+                funding_rate = market.data.amm.last_funding_rate / 1e6
+                hourly_funding = funding_rate * 100
+
+                drift_data.append({
+                    'Symbol': clean_sym,
+                    'Market Index': market_index,
+                    'Max Lev. on Drift': max_leverage,
+                    'OI on Drift': oi_usd,
+                    'Funding Rate % (1h)': sig_figs(hourly_funding, 3),
+                    'Oracle Price': oracle_price,
+                    'Volume on Drift': 0  # Will be updated with actual data
+                })
+
+            except Exception as e:
+                logger.error(f"==> Error processing market {market_index}: {str(e)}")
+                logger.error(traceback.format_exc())
+                continue
+
+        if not drift_data:
+            logger.error("==> No Drift markets data was processed")
+            return None
+
+        # Fetch actual trade volume data for all markets
+        symbols = [item['Symbol'] for item in drift_data]
+        volumes_by_symbol = await batch_calculate_market_volumes(symbols)
+        
+        # Update drift_data with actual volume values
+        for item in drift_data:
+            symbol = item['Symbol']
+            if symbol in volumes_by_symbol:
+                item['Volume on Drift'] = volumes_by_symbol[symbol]
+        
+        return drift_data
+
+    except Exception as e:
+        logger.error(f"==> Error fetching Drift data: {str(e)}")
+        logger.error(traceback.format_exc())
+        return None
 
 async def fetch_drift_sdk_data(drift_client) -> dict:
-    """Fetches current on-chain data using DriftPy SDK."""
-    drift_sdk_metrics = {} # Dict: symbol -> sdk_data_dict
+    """Fetches current on-chain data using DriftPy SDK.
+    
+    Args:
+        drift_client: Initialized Drift client instance
+        
+    Returns:
+        dict: Mapping of symbol to current market data from SDK
+    """
+    drift_sdk_metrics = {}  # Dict: symbol -> sdk_data_dict
     logger.info("Fetching data from Drift SDK...")
-    if not drift_client: # or not drift_client.is_initialized(): # Add checks
+    
+    if not drift_client:
         logger.error("Drift client not available or initialized.")
         return {}
 
     try:
-        # Placeholder implementation for Drift SDK data
-        logger.info("Using placeholder data for Drift SDK metrics")
-        
-        # Example data for BTC
-        drift_sdk_metrics['BTC'] = {
-            'is_listed_perp': True,
-            'perp_market': 'BTC-PERP',
-            'oracle_price': 93500.0,
-            'max_leverage': 10.0,
-            'funding_rate_1h': 0.001,
-            'is_listed_spot': True,
-            'spot_market': 'SOL'
-        }
-        
-        # Example data for ETH
-        drift_sdk_metrics['ETH'] = { 
+        # Get all perp markets
+        perp_markets = drift_client.get_perp_markets()
+        markets_count = len(perp_markets)
+        if not perp_markets:
+            logger.error("No perp markets found in Drift data")
+            return {}
+
+        logger.info(f"Found {markets_count} perp markets initially")
+
+        # Process each perp market
+        for market in perp_markets:
+            try:
+                market_index = market.data.market_index
+
+                # Get market config by index
+                market_config = next((cfg for cfg in mainnet_perp_market_configs if cfg and cfg.market_index == market_index), None)
+                if not market_config:
+                    logger.warning(f"No market config found for market index {market_index}")
+                    continue
+
+                # Get symbol and clean it
+                symbol = market_config.symbol
+                clean_sym = clean_symbol(symbol)
+
+                # Skip if symbol is in ignored list
+                if symbol in IGNORED_SYMBOLS or clean_sym in IGNORED_SYMBOLS:
+                    logger.info(f"Skipping ignored market: {symbol} (Index: {market_index})")
+                    continue
+
+                # Get max leverage (from initial margin ratio)
+                initial_margin_ratio = market.data.margin_ratio_initial / 10000
+                max_leverage = int(1 / initial_margin_ratio) if initial_margin_ratio > 0 else 0
+
+                # Get oracle price
+                oracle_price_data = drift_client.get_oracle_price_data_for_perp_market(market_index)
+                oracle_price = oracle_price_data.price / 1e6  # Convert from UI price
+
+                # Get funding rate (hourly)
+                funding_rate = market.data.amm.last_funding_rate / 1e6  # Convert to percentage
+                hourly_funding = funding_rate * 100  # As percentage
+
+                # Store market data
+                drift_sdk_metrics[clean_sym] = {
             'is_listed_perp': True, 
-            'perp_market': 'ETH-PERP', 
-            'oracle_price': 5000.0,
-            'max_leverage': 20.0,
-            'funding_rate_1h': 0.0015,
-            'is_listed_spot': False,
-            'spot_market': None
-        }
-        
+                    'perp_market': f"{clean_sym}-PERP",
+                    'oracle_price': oracle_price,
+                    'max_leverage': max_leverage,
+                    'funding_rate_1h': hourly_funding,
+                    'is_listed_spot': False,  # Would need spot market lookup logic
+                    'spot_market': None,
+                    'market_index': market_index
+                }
+
+                logger.info(f"Processed market data for {clean_sym} (Index: {market_index})")
+
+            except Exception as e:
+                logger.error(f"Error processing market {market_index}: {str(e)}")
+                logger.error(traceback.format_exc())
+                continue
+
     except Exception as e:
         logger.error(f"Error fetching Drift SDK data: {e}", exc_info=True)
     
     return drift_sdk_metrics
 
 
-async def fetch_drift_api_data(session: aiohttp.ClientSession, symbols_to_fetch: list) -> dict:
-    """Fetches historical/aggregated data like 30d vol and OI from Drift Data API."""
-    drift_api_metrics = {} # Dict: symbol -> api_data_dict
-    logger.info(f"Fetching 30d volume/OI from Drift Data API for {len(symbols_to_fetch)} symbols...")
+async def get_drift_client_and_vat():
+    """Initialize and return a Drift client instance and Vat."""
+    try:
+        # Get RPC endpoint from environment or use default
+        rpc_endpoint = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
+        
+        # Initialize provider
+        provider = Provider.local(rpc_endpoint)
+        
+        # Initialize Drift client with the correct parameters
+        drift_client = DriftClient(
+            connection=provider.connection,
+            wallet=provider.wallet,
+            program_id=DRIFT_PROGRAM_ID,
+            opts=provider.opts
+        )
+        
+        # Initialize the client
+        await drift_client.subscribe()
+        
+        # Initialize Vat
+        vat = Vat(drift_client.program)
+        await vat.update()
+        
+        return drift_client, vat
+    except Exception as e:
+        logger.error(f"Error initializing Drift client and Vat: {e}")
+        return None, None
 
-    # Placeholder implementation for Drift API data
-    logger.info("Using placeholder data for Drift API metrics")
+async def fetch_drift_api_data(session: aiohttp.ClientSession, drift_client: DriftClient, vat: Vat) -> dict:
+    """Fetches historical/aggregated data like 30d vol and OI from Drift Data API.
     
-    # Example data for BTC
-    drift_api_metrics['BTC'] = {
-        'volume_30d': 200000000.0,
-        'open_interest': 150000000.0
-    }
-    
-    # Example data for ETH
-    drift_api_metrics['ETH'] = {
-        'volume_30d': 100000000.0,
-        'open_interest': 70000000.0
-    }
-    
+    Args:
+        session: aiohttp client session
+        drift_client: Initialized Drift client instance
+        vat: Initialized Vat instance for efficient data access
+        
+    Returns:
+        dict: Mapping of symbol to volume and OI data
+    """
+    drift_api_metrics = {}  # Dict: symbol -> api_data_dict
+    logger.info("Fetching volume and OI data from Drift...")
+
+    try:
+        # Track long and short positions separately for each market
+        market_long_positions = {}   # Track sum of long positions
+        market_short_positions = {}  # Track sum of short positions
+        market_position_counts = {}  # Track number of positions
+
+        # Get user accounts from Vat
+        user_accounts = vat.get_user_accounts()
+        user_count = len(user_accounts)
+        logger.info(f"Processing positions from {user_count} users via Vat...")
+        
+        processed_users = 0
+        for user_account in user_accounts:
+            try:
+                processed_users += 1
+                if processed_users % 5000 == 0:
+                    logger.info(f"Processed {processed_users}/{user_count} users...")
+
+                # Get active perp positions from user account
+                perp_positions = user_account.get_active_perp_positions()
+
+                # Process each position
+                for position in perp_positions:
+                    if position.base_asset_amount != 0:
+                        market_idx = position.market_index
+                        base_amount = position.base_asset_amount
+
+                        # Initialize market tracking if first time seeing this market
+                        if market_idx not in market_long_positions:
+                            market_long_positions[market_idx] = 0
+                            market_short_positions[market_idx] = 0
+                            market_position_counts[market_idx] = 0
+
+                        # Add to appropriate direction (long or short)
+                        if base_amount > 0:  # Long position
+                            market_long_positions[market_idx] += base_amount
+                        else:  # Short position
+                            market_short_positions[market_idx] += abs(base_amount)
+
+                        market_position_counts[market_idx] += 1
+
+            except Exception as e:
+                logger.debug(f"Error processing user positions: {str(e)}")
+                continue
+
+        logger.info(f"Found positions in {len(market_long_positions)} markets")
+
+        # Get all perp markets for symbol mapping
+        perp_markets = drift_client.get_perp_markets()
+        
+        # Process each market's OI
+        for market in perp_markets:
+            try:
+                market_index = market.data.market_index
+                
+                # Skip if no positions found for this market
+                if market_index not in market_long_positions and market_index not in market_short_positions:
+                    continue
+
+                # Get market config and symbol
+                market_config = next((cfg for cfg in mainnet_perp_market_configs if cfg and cfg.market_index == market_index), None)
+                if not market_config:
+                    continue
+                
+                symbol = clean_symbol(market_config.symbol)
+                
+                # Skip ignored symbols
+                if symbol in IGNORED_SYMBOLS:
+                    continue
+
+                # Get oracle price
+                oracle_price_data = drift_client.get_oracle_price_data_for_perp_market(market_index)
+                oracle_price = oracle_price_data.price / 1e6  # Convert from UI price
+
+                # Calculate OI as max(abs(long), abs(short))
+                long_amount = market_long_positions.get(market_index, 0)
+                short_amount = market_short_positions.get(market_index, 0)
+                base_oi = max(long_amount, short_amount)
+                
+                # Get base decimals
+                base_decimals = MARKET_BASE_DECIMALS.get(market_index, 9)
+                
+                try:
+                    if hasattr(market.data, 'base_decimals'):
+                        base_decimals = market.data.base_decimals
+                    elif hasattr(market.data, 'amm') and hasattr(market.data.amm, 'base_asset_decimals'):
+                        base_decimals = market.data.amm.base_asset_decimals
+                except Exception:
+                    pass
+
+                # Convert to human readable units
+                base_oi_readable = base_oi / (10 ** base_decimals)
+                oi_usd = base_oi_readable * oracle_price
+
+                # Fetch 30-day volume from API
+                volume_30d = await batch_calculate_market_volumes([symbol])
+                volume = volume_30d.get(symbol, 0) if volume_30d else 0
+
+                drift_api_metrics[symbol] = {
+                    'volume_30d': volume,
+                    'open_interest': oi_usd
+                }
+
+                logger.info(
+                    f"Processed market {symbol}: OI=${oi_usd:,.2f}, "
+                    f"Volume=${volume:,.2f}, Positions={market_position_counts.get(market_index, 0)}"
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing market metrics: {str(e)}")
+                continue
+
+    except Exception as e:
+        logger.error(f"Error fetching Drift metrics: {e}", exc_info=True)
+
     return drift_api_metrics
 
 
 # --- Data Update/Merge Function ---
 
-def update_market_data(existing_data: list, fetched_cg_market: dict, fetched_cg_volume: dict, fetched_drift_sdk: dict, fetched_drift_api: dict) -> list:
-    """Updates the existing market data list with fetched data."""
-    logger.info("Updating market data with fetched results...")
-    updated_data_map = {item['symbol']: item for item in existing_data}
-    all_symbols = set(updated_data_map.keys())
+async def update_market_data(market_data: Dict[str, Any], vat: Vat) -> Dict[str, Any]:
+    """
+    Update existing market data with fetched data from various sources.
+    """
+    try:
+        market_index = market_data.get('market_index')
+        if market_index is None:
+            return market_data
 
-    # --- Integrate CoinGecko Market Data ---
-    cg_ids_processed = set()
-    for cg_id, cg_data in fetched_cg_market.items():
-        # --- Use clean_symbol() logic if needed, map cg_id to symbol ---
-        symbol = cg_data.get('symbol','').upper() # Simplistic mapping for outline
-        if not symbol: continue
+        # Get oracle price directly from vat
+        market_price = vat.perp_oracles.get(market_index)
+        if market_price is None:
+            return market_data
 
-        all_symbols.add(symbol)
-        cg_ids_processed.add(cg_id)
-        if symbol not in updated_data_map:
-            updated_data_map[symbol] = get_default_market_structure(symbol)
-
-        # Update coingecko_data section
-        target = updated_data_map[symbol]['coingecko_data']
-        target['coingecko_name'] = cg_data.get('name')
-        target['coingecko_id'] = cg_id
-        target['coingecko_image_url'] = cg_data.get('image_url')
-        target['coingecko_current_price'] = cg_data.get('current_price')
-        target['coingecko_market_cap_rank'] = cg_data.get('market_cap_rank')
-        target['coingecko_market_cap'] = cg_data.get('market_cap')
-        target['coingecko_fully_diluted_valuation'] = cg_data.get('fully_diluted_valuation')
-        target['coingecko_total_volume_24h'] = cg_data.get('total_volume_24h')
-        target['coingecko_circulating_supply'] = cg_data.get('circulating_supply')
-        target['coingecko_total_supply'] = cg_data.get('total_supply')
-        target['coingecko_max_supply'] = cg_data.get('max_supply')
-        target['coingecko_ath_price'] = cg_data.get('ath_price')
-        target['coingecko_ath_change_percentage'] = cg_data.get('ath_change_percentage')
-
-        # Calculate derived MC (example)
-        mc = target['coingecko_market_cap'] or 0
-        fdv = target['coingecko_fully_diluted_valuation'] or 0
-        target['coingecko_mc_derived'] = max(mc, fdv) if (mc or fdv) else None
-
-
-    # --- Integrate CoinGecko Volume Data ---
-    for cg_id, avg_vol in fetched_cg_volume.items():
-        # Find corresponding symbol(s) - might need a better mapping
-        found = False
-        for symbol, data in updated_data_map.items():
-            if data['coingecko_data'].get('coingecko_id') == cg_id:
-                 data['coingecko_data']['coingecko_global_volume_30d_avg'] = avg_vol
-                 found = True
-                 break # Assume 1-1 mapping for now
-        # if not found: logger.warning(f"No symbol found for CG volume ID: {cg_id}") # Causes too much noise initially
-
-
-    # --- Integrate Drift SDK Data ---
-    for symbol, sdk_data in fetched_drift_sdk.items():
-        symbol_upper = symbol.upper()
-        all_symbols.add(symbol_upper)
-        if symbol_upper not in updated_data_map:
-             updated_data_map[symbol_upper] = get_default_market_structure(symbol_upper)
-
-        target = updated_data_map[symbol_upper]['drift_data']
-        target['drift_is_listed_spot'] = sdk_data.get('is_listed_spot', False)
-        target['drift_is_listed_perp'] = sdk_data.get('is_listed_perp', False)
-        target['drift_spot_market'] = sdk_data.get('spot_market')
-        target['drift_perp_market'] = sdk_data.get('perp_market')
-        target['drift_oracle_price'] = sdk_data.get('oracle_price')
-        target['drift_max_leverage'] = sdk_data.get('max_leverage')
-        target['drift_funding_rate_1h'] = sdk_data.get('funding_rate_1h')
-        # Note: OI not updated here, assuming it comes from API
-
-
-    # --- Integrate Drift API Data (Volume, OI) ---
-    for symbol, api_data in fetched_drift_api.items():
-         symbol_upper = symbol.upper()
-         if symbol_upper in updated_data_map: # Only update if symbol exists
-              target = updated_data_map[symbol_upper]['drift_data']
-              target['drift_volume_30d'] = api_data.get('volume_30d')
-              target['drift_open_interest'] = api_data.get('open_interest')
-         # else: logger.warning(f"Symbol {symbol_upper} from Drift API not found in main map.") # Could happen if CG data missing
-
-
-    # --- Ensure all symbols processed have a structure ---
-    final_data_list = []
-    for symbol in sorted(list(all_symbols)):
-         if symbol not in updated_data_map:
-              logger.warning(f"Creating default structure for symbol {symbol} that wasn't fully processed.")
-              updated_data_map[symbol] = get_default_market_structure(symbol)
-         final_data_list.append(updated_data_map[symbol])
-
-
-    logger.info(f"Finished updating data. Total symbols: {len(final_data_list)}")
-    return final_data_list
+        # Update market data with oracle price
+        market_data['oracle_price'] = market_price.price / PRICE_PRECISION
+        
+        return market_data
+    except Exception as e:
+        logger.error(f"Error updating market data: {e}", exc_info=True)
+        return market_data
 
 
 # --- Scoring Function ---
@@ -520,10 +804,12 @@ def calculate_scores(market_data: list) -> list:
                 scores['scoring_market_cap_score'] += partial_mc_score
 
             # Global Volume Score Calculation
-            vol_30d_avg_metric = cg_data.get('coingecko_global_volume_30d_avg') or 0
+            vol_30d_total = cg_data.get('coingecko_30d_volume_total') or 0
+            # Convert total to daily average for scoring
+            vol_30d_avg = vol_30d_total / 30 if vol_30d_total > 0 else 0
             vol_config = SCORE_CUTOFFS.get('Global Vol Score', {}).get('coingecko_global_volume_30d_avg', {})
-            if vol_config and vol_30d_avg_metric > 0:
-                partial_global_vol_score = calculate_partial_score(vol_30d_avg_metric, vol_config)
+            if vol_config and vol_30d_avg > 0:
+                partial_global_vol_score = calculate_partial_score(vol_30d_avg, vol_config)
                 scores['scoring_partial_global_volume'] = partial_global_vol_score
                 scores['scoring_global_vol_score'] += partial_global_vol_score
 
@@ -640,6 +926,14 @@ def calculate_recommendation(overall_score: float, max_leverage: Optional[float]
     # Default: keep as is
     return "Keep"
 
+def sig_figs(number: float, sig_figs: int = 3) -> float:
+    """Round a number to specified significant figures."""
+    if number == 0:
+        return 0
+    try:
+        return round(number, sig_figs - 1 - int(math.log10(abs(number))))
+    except (ValueError, TypeError):
+        return 0
 
 # --- Main Orchestration Function (Async) ---
 
@@ -647,10 +941,6 @@ async def main():
     """Main function to orchestrate loading, fetching, updating, scoring, and saving."""
     start_time = time.time()
     logger.info("=== Starting Market Data Engine Run ===")
-
-    # Initialize Drift client if needed (commented out for now)
-    drift_client = None
-    logger.info("Drift Client setup placeholder - not initialized for this run.")
 
     # Load existing data
     market_data = await load_market_data(MARKET_DATA_FILE)
@@ -678,38 +968,17 @@ async def main():
         logger.info(f"Step 2: Fetching volumes for {len(coingecko_ids_to_fetch_volume)} CoinGecko IDs...")
         fetched_cg_volume = await fetch_all_coingecko_volumes(session, coingecko_ids_to_fetch_volume)
         
-        # Step 3: Fetch Drift SDK data (placeholder)
-        logger.info("Step 3: Fetching Drift SDK data (placeholder)...")
-        fetched_drift_sdk = await fetch_drift_sdk_data(drift_client)
-        
-        # Step 4: Fetch Drift API data (placeholder)
-        logger.info("Step 4: Fetching Drift API data (placeholder)...")
-        # In a real implementation, we would extract symbols from fetched_cg_market to pass to this function
-        drift_perp_symbols_to_fetch = ['BTC-PERP', 'ETH-PERP']  # Placeholder example
-        fetched_drift_api = await fetch_drift_api_data(session, drift_perp_symbols_to_fetch)
-
-    # Step 5: Update data structure
-    logger.info("Step 5: Updating market data with fetched results...")
-    market_data = update_market_data(
-        market_data,
-        fetched_cg_market or {},
-        fetched_cg_volume or {},
-        fetched_drift_sdk or {},
-        fetched_drift_api or {}
-    )
-
-    # Step 6: Calculate scores
-    logger.info("Step 6: Calculating scores and recommendations...")
+    # Step 3: Calculate scores
+    logger.info("Step 3: Calculating scores and recommendations...")
     market_data = calculate_scores(market_data)
 
-    # Step 7: Save updated data
-    logger.info(f"Step 7: Saving {len(market_data)} records to {MARKET_DATA_FILE}...")
+    # Step 4: Save updated data
+    logger.info(f"Step 4: Saving {len(market_data)} records to {MARKET_DATA_FILE}...")
     await save_market_data(market_data, MARKET_DATA_FILE)
 
     end_time = time.time()
     logger.info(f"=== Market Data Engine Run Finished in {end_time - start_time:.2f} seconds ===")
     logger.info(f"=== Saved {len(market_data)} records to {MARKET_DATA_FILE} ===")
-
 
 # --- Entry Point ---
 if __name__ == "__main__":
@@ -719,3 +988,332 @@ if __name__ == "__main__":
         logger.info("Run interrupted by user.")
     except Exception as e:
         logger.critical(f"Unhandled error in main execution: {e}", exc_info=True)
+
+# Create FastAPI router
+router = APIRouter()
+
+@router.get("/market_recommendations")
+async def get_market_recommendations(request: BackendRequest):
+    """
+    Get market recommendations based on CoinGecko data and Drift protocol data.
+    
+    This endpoint combines data from CoinGecko (market caps, volumes) with
+    Drift protocol data (positions, oracle prices) to generate market recommendations.
+    """
+    logger.info("Received request for market recommendations")
+    
+    try:
+        start_time = time.time()
+        
+        # Get Vat from backend state
+        vat: Vat = request.state.backend_state.vat
+        if not vat:
+            return {
+                "status": "error",
+                "message": "Vat not available in backend state",
+                "data": None
+            }
+            
+        # Load existing data
+        market_data = await load_market_data(MARKET_DATA_FILE)
+        symbols_in_file = {item['symbol'] for item in market_data}
+        logger.info(f"Found {len(symbols_in_file)} symbols in existing file.")
+
+        # Fetch CoinGecko data
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Fetch CoinGecko market data
+            logger.info("Step 1: Fetching CoinGecko market data...")
+            fetched_cg_market = await fetch_all_coingecko_market_data(session)
+            
+            if not fetched_cg_market:
+                logger.error("Failed to fetch CoinGecko market data")
+                return {
+                    "status": "error",
+                    "message": "Failed to fetch CoinGecko market data",
+                    "data": None
+                }
+                
+            logger.info(f"Successfully fetched data for {len(fetched_cg_market)} markets from CoinGecko")
+            
+            # Step 2: Fetch CoinGecko volume data
+            coingecko_ids = list(fetched_cg_market.keys())
+            logger.info(f"Step 2: Fetching volumes for {len(coingecko_ids)} CoinGecko IDs...")
+            fetched_cg_volume = await fetch_all_coingecko_volumes(session, coingecko_ids)
+
+        # Step 3: Fetch Drift data using Vat
+        logger.info("Step 3: Fetching Drift protocol data...")
+        drift_data = await get_drift_data(vat)
+        
+        # Step 4: Update market data
+        logger.info("Step 4: Updating market data...")
+        for item in market_data:
+            item = await update_market_data(item, vat)
+
+        # Step 5: Calculate scores
+        logger.info("Step 5: Calculating scores and recommendations...")
+        market_data = calculate_scores(market_data)
+
+        # Save updated data
+        await save_market_data(market_data, MARKET_DATA_FILE)
+
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        return {
+            "status": "success",
+            "message": "Market recommendations generated successfully",
+            "data": {
+                "recommendations": market_data,
+                "metadata": {
+                    "processing_time": duration,
+                    "coingecko_markets": len(fetched_cg_market),
+                    "drift_markets": len(drift_data) if drift_data else 0,
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating market recommendations: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "message": f"Error generating market recommendations: {str(e)}",
+            "data": None
+        }
+
+@router.get("/single_market")
+async def get_single_market_data(request: BackendRequest, market_index: int):
+    """
+    Get detailed data for a single market.
+    
+    This endpoint provides detailed analysis of a single market, combining
+    CoinGecko data with Drift protocol data.
+    """
+    logger.info(f"Received request for market {market_index}")
+    
+    try:
+        # Get Vat from backend state
+        vat: Vat = request.state.backend_state.vat
+        if not vat:
+            return {
+                "status": "error",
+                "message": "Vat not available in backend state",
+                "data": None
+            }
+            
+        # Get market config
+        market_config = next((cfg for cfg in mainnet_perp_market_configs if cfg and cfg.market_index == market_index), None)
+        if not market_config:
+            return {
+                "status": "error",
+                "message": f"No market config found for index {market_index}",
+                "data": None
+            }
+            
+        # Get symbol
+        symbol = market_config.symbol
+        clean_sym = clean_symbol(symbol)
+        
+        # Skip ignored symbols
+        if symbol in IGNORED_SYMBOLS or clean_sym in IGNORED_SYMBOLS:
+            return {
+                "status": "error",
+                "message": f"Market {symbol} is in the ignored list",
+                "data": None
+            }
+            
+        # Get market data from Vat
+        market = vat.perp_markets.get(market_index)
+        if not market:
+            return {
+                "status": "error",
+                "message": f"Market {market_index} not found in Vat",
+                "data": None
+            }
+            
+        # Get oracle price
+        market_price = vat.perp_oracles.get(market_index)
+        if market_price is None:
+            return {
+                "status": "error",
+                "message": f"Oracle price not found for market {market_index}",
+                "data": None
+            }
+            
+        oracle_price = market_price.price / PRICE_PRECISION
+        
+        # Fetch CoinGecko data for this symbol
+        async with aiohttp.ClientSession() as session:
+            cg_market = await fetch_all_coingecko_market_data(session)
+            cg_volume = await fetch_all_coingecko_volumes(session, [clean_sym])
+            
+        return {
+            "status": "success",
+            "message": f"Data retrieved for market {clean_sym}",
+            "data": {
+                "symbol": clean_sym,
+                "market_index": market_index,
+                "oracle_price": oracle_price,
+                "drift_data": {
+                    "max_leverage": int(1 / (market.data.margin_ratio_initial / 10000)) if market.data.margin_ratio_initial > 0 else 0,
+                    "funding_rate": market.data.amm.last_funding_rate / 1e6 * 100,
+                    "base_decimals": MARKET_BASE_DECIMALS.get(market_index, 9)
+                },
+                "coingecko_data": cg_market.get(clean_sym, {}),
+                "volume_data": cg_volume.get(clean_sym, 0)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching single market data: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "message": f"Error fetching single market data: {str(e)}",
+            "data": None
+        }
+
+async def batch_calculate_market_volumes(symbols: List[str]):
+    """
+    Calculate volumes for multiple markets in parallel with rate limiting.
+    
+    Args:
+        symbols: List of market symbols
+        
+    Returns:
+        Dictionary mapping symbols to their volumes
+    """
+    logger.info(f"Calculating actual trade volumes for {len(symbols)} markets")
+    print(f"Fetching actual 30-day trade volumes from Drift API for {len(symbols)} markets...")
+    
+    volumes = {}
+    semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+    
+    async def fetch_with_semaphore(symbol):
+        async with semaphore:
+            volume = await calculate_market_volume(symbol)
+            volumes[symbol] = volume
+            print(f"Fetched {symbol} volume: ${volume:,.2f}")
+    
+    tasks = [fetch_with_semaphore(symbol) for symbol in symbols]
+    await asyncio.gather(*tasks)
+    
+    return volumes
+
+async def calculate_market_volume(symbol: str):
+    """
+    Calculate the total trading volume for a market over the past 30 days.
+    
+    Args:
+        symbol: Market symbol (e.g., "SOL-PERP")
+        
+    Returns:
+        Total volume in USD (float)
+    """
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=DAYS_TO_CONSIDER)
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            trades = await fetch_market_trades(session, symbol, start_date, end_date)
+            
+            # Sum up the quote asset amounts from all filled trades
+            total_volume = 0.0
+            for trade in trades:
+                try:
+                    quote_amount = float(trade.get("quoteAssetAmountFilled", 0))
+                    total_volume += quote_amount
+                except (ValueError, TypeError):
+                    continue
+            
+            logger.info(f"Calculated {DAYS_TO_CONSIDER}-day volume for {symbol}: ${total_volume:,.2f}")
+            return total_volume
+    except Exception as e:
+        logger.error(f"Error calculating volume for {symbol}: {str(e)}")
+        logger.error(traceback.format_exc())
+        return 0.0
+
+async def fetch_market_trades(session, symbol: str, start_date: datetime, end_date: datetime = None):
+    """
+    Fetch all trades for a market within the specified date range.
+    """
+    if end_date is None:
+        end_date = datetime.now()
+    
+    current_date = start_date
+    all_trades = []
+    
+    while current_date <= end_date:
+        year, month, day = current_date.year, current_date.month, current_date.day
+        
+        # Make sure DRIFT_DATA_API_BASE_URL is available
+        if not DRIFT_DATA_API_BASE_URL:
+            logger.error("DRIFT_DATA_API_BASE_URL environment variable not set")
+            return []
+            
+        url = f"{DRIFT_DATA_API_BASE_URL}/market/{symbol}/trades/{year}/{month}/{day}?format=json"
+        
+        logger.debug(f"Fetching trades for {symbol} on {year}/{month}/{day}")
+        
+        # Fetch first page
+        data = await fetch_api_page(session, url)
+        
+        if data["success"] and "records" in data:
+            all_trades.extend(data["records"])
+            
+            # Handle pagination if needed
+            page = 1
+            total_pages = data.get("meta", {}).get("totalPages", 1)
+            
+            while page < total_pages and page < 10:  # Limit to 10 pages per day to avoid excessive requests
+                page += 1
+                paginated_url = f"{url}&page={page}"
+                page_data = await fetch_api_page(session, paginated_url)
+                
+                if page_data["success"] and "records" in page_data:
+                    all_trades.extend(page_data["records"])
+                else:
+                    break
+        
+        # Move to next day
+        current_date += timedelta(days=1)
+    
+    return all_trades
+
+async def fetch_api_page(session, url: str, retries: int = 5):
+    """
+    Fetch a single page from the Drift API with rate limiting and retries.
+    """
+    global last_request_time
+    
+    for attempt in range(retries):
+        # Apply rate limiting
+        async with rate_limit_lock:
+            current_time = time.time()
+            wait_time = API_RATE_LIMIT_INTERVAL - (current_time - last_request_time)
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            last_request_time = time.time()
+        
+        try:
+            async with session.get(url, headers=DRIFT_DATA_API_HEADERS, timeout=10) as response:
+                if response.status != 200:
+                    logger.warning(f"API request failed: {url}, status: {response.status}")
+                    if attempt < retries - 1:
+                        # Exponential backoff
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    return {"success": False, "records": [], "meta": {"totalRecords": 0}}
+                
+                data = await response.json()
+                return data
+        except Exception as e:
+            logger.warning(f"Error fetching {url}: {str(e)}")
+            if attempt < retries - 1:
+                # Exponential backoff
+                await asyncio.sleep(2 ** attempt)
+                continue
+            return {"success": False, "records": [], "meta": {"totalRecords": 0}}
+    
+    return {"success": False, "records": [], "meta": {"totalRecords": 0}}
