@@ -73,6 +73,7 @@ def delist_recommender_page():
     st.title("📉 Delist Recommender")
     st.markdown("This page provides recommendations for delisting or adjusting leverage for Drift perpetual markets based on various metrics calculated by the backend.")
     st.markdown("THIS PAGE IS IN BETA AND SUBJECT TO CHANGE. USE AT YOUR OWN RISK.")
+    st.markdown("The scoring system hasn't been completely worked out yet.")
     # Fetch data
     data = fetch_delist_recommendations()
 
