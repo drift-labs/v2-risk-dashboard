@@ -228,7 +228,7 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
                 # Add perp market data
                 drift_markets[symbol]["drift_perp_markets"][market_name] = {
                     "drift_perp_oracle_price": oracle_price,
-                    "drift_volume_30d": 0.0,  # Will be updated when volume data is available
+                    "drift_perp_volume_30d": 0.0,  # Will be updated when volume data is available
                 }
                 
             except Exception as e:
@@ -289,7 +289,7 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
                 logger.info(f"Adding spot market {raw_symbol} to {symbol}'s drift_spot_markets")
                 drift_markets[symbol]["drift_spot_markets"][raw_symbol] = {
                     "drift_spot_oracle_price": spot_oracle_price,
-                    "drift_volume_30d": 0.0,  # Will be updated when volume data is available
+                    "drift_spot_volume_30d": 0.0,  # Will be updated when volume data is available
                 }
                 logger.info(f"Current spot markets for {symbol}: {list(drift_markets[symbol]['drift_spot_markets'].keys())}")
                 
@@ -320,18 +320,19 @@ def fetch_drift_data_api_data() -> Dict:
             "drift_is_listed_perp": "true",
             "drift_perp_markets": {
                 "BTC-PERP": {
-                    "drift_perp_oracle_price": 93500.0,
-                    "drift_volume_30d": 150000000.0,
+                    "drift_perp_volume_30d": 150000000.0,
+                    "drift_is_listed_perp": True,
+                    "drift_perp_oi": 100000000.0,
                 }
             },
             "drift_spot_markets": {
-                "wBTC": {
-                    "drift_spot_oracle_price": 93450.0,
-                    "drift_volume_30d": 25000000.0,
+                "WBTC": {
+                    "drift_spot_volume_30d": 25000000.0,
+                    "drift_is_listed_spot": True,
                 },
-                "cbBTC": {
-                    "drift_spot_oracle_price": 93425.0,
-                    "drift_volume_30d": 25000000.0,
+                "CBBTC": {
+                    "drift_spot_volume_30d": 25000000.0,
+                    "drift_is_listed_spot": True,
                 }
             },
             "drift_total_volume_30d": 200000000.0,  # Sum of all market volumes
@@ -344,20 +345,25 @@ def fetch_drift_data_api_data() -> Dict:
             "drift_is_listed_perp": "true",
             "drift_perp_markets": {
                 "ETH-PERP": {
-                    "drift_perp_oracle_price": 5200.0,
-                    "drift_volume_30d": 100000000.0,
+                    "drift_perp_volume_30d": 100000000.0,
+                    "drift_is_listed_perp": True,
+                    "drift_perp_oi": 50000000.0,
                 }
             },
             "drift_spot_markets": {
-                "wETH": {
-                    "drift_spot_oracle_price": 5195.0,
-                    "drift_volume_30d": 50000000.0,
+                "WETH": {
+                    "drift_spot_volume_30d": 50000000.0,
+                    "drift_is_listed_spot": True,
                 }
             },
             "drift_total_volume_30d": 150000000.0,  # Sum of all market volumes
             "drift_max_leverage": 10.0,
             "drift_open_interest": 100000000.0,
             "drift_funding_rate_1h": 0.0008
+        },
+        "USDC": {
+            "drift_spot_volume_30d": 0.0,
+            "drift_is_listed_spot": True,
         }
     }
 
@@ -434,12 +440,12 @@ def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
         # Process perp markets
         perp_markets = market_info.get('drift_perp_markets', {})
         for perp_data in perp_markets.values():
-            total_volume += perp_data.get('drift_volume_30d', 0.0)
+            total_volume += perp_data.get('drift_perp_volume_30d', 0.0)
             
         # Process spot markets
         spot_markets = market_info.get('drift_spot_markets', {})
         for spot_data in spot_markets.values():
-            total_volume += spot_data.get('drift_volume_30d', 0.0)
+            total_volume += spot_data.get('drift_spot_volume_30d', 0.0)
         
         # Calculate scores using helper functions
         volume_score = calculate_volume_score(total_volume)
@@ -518,11 +524,11 @@ def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
         
         # Sum volumes from perp markets
         for market_data in processed_drift_data[symbol]["drift_perp_markets"].values():
-            total_volume += market_data.get("drift_volume_30d", 0.0)
+            total_volume += market_data.get("drift_perp_volume_30d", 0.0)
             
         # Sum volumes from spot markets
         for market_data in processed_drift_data[symbol]["drift_spot_markets"].values():
-            total_volume += market_data.get("drift_volume_30d", 0.0)
+            total_volume += market_data.get("drift_spot_volume_30d", 0.0)
             
         processed_drift_data[symbol]["drift_total_volume_30d"] = total_volume
     
@@ -558,11 +564,9 @@ def main(vat: Vat) -> List[Dict]:
                 asset["drift_data"] = {
                     "drift_is_listed_spot": "false",
                     "drift_is_listed_perp": "false",
-                    "drift_spot_market": None,
-                    "drift_perp_market": None,
-                    "drift_perp_oracle_price": None,
-                    "drift_spot_oracle_price": None,
-                    "drift_volume_30d": 0.0,
+                    "drift_perp_markets": {},
+                    "drift_spot_markets": {},
+                    "drift_total_volume_30d": 0.0,
                     "drift_max_leverage": 0.0,
                     "drift_open_interest": 0.0,
                     "drift_funding_rate_1h": 0.0
