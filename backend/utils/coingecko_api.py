@@ -6,10 +6,8 @@ It provides functions to fetch current market data, historical volumes, and othe
 import os
 import json
 import time
-import asyncio
-import aiohttp
+import requests
 import logging
-import math
 from typing import Dict, List, Optional, Union, Tuple
 from datetime import datetime
 
@@ -24,15 +22,21 @@ logger = logging.getLogger(__name__)
 COINGECKO_API_BASE = "https://api.coingecko.com/api/v3"
 COINGECKO_DEMO_API_KEY = "CG-oWyNSQuvyZMKCDzL3yqGzyrh"  # Demo key
 COINGECKO_REQ_PER_MINUTE = 30  # Conservative rate limit
-COINGECKO_RATE_LIMIT_DELAY = 60.0 / COINGECKO_REQ_PER_MINUTE
+COINGECKO_RATE_LIMIT_DELAY = 2 # Reduced from 60s to 15s
 MAX_COINS_PER_PAGE = 250  # Maximum allowed by CoinGecko API
 
 # --- Global Rate Limiter Variables ---
-cg_rate_limit_lock = asyncio.Lock()
 cg_last_request_time = 0.0
+cg_api_calls = 0  # Counter for API calls
 
 # --- Helper Functions ---
-async def enforce_rate_limit(last_request_time: float, rate_limit: float) -> None:
+def increment_api_calls():
+    """Increment the API call counter and log the current count."""
+    global cg_api_calls
+    cg_api_calls += 1
+    logger.info(f"CoinGecko API calls made: {cg_api_calls}")
+
+def enforce_rate_limit(last_request_time: float, rate_limit: float) -> None:
     """
     Enforce rate limiting by waiting if necessary.
     
@@ -44,9 +48,11 @@ async def enforce_rate_limit(last_request_time: float, rate_limit: float) -> Non
     time_since_last_request = current_time - last_request_time
     
     if time_since_last_request < rate_limit:
-        await asyncio.sleep(rate_limit - time_since_last_request)
+        wait_time = rate_limit - time_since_last_request
+        logger.info(f"Rate limiting: Waiting {wait_time:.2f}s")
+        time.sleep(wait_time)
 
-async def make_api_request(
+def make_api_request(
     url: str,
     method: str = "GET",
     headers: Optional[Dict] = None,
@@ -68,41 +74,38 @@ async def make_api_request(
     Returns:
         Dict containing the response data or error information
     """
-    await enforce_rate_limit(last_request_time, rate_limit)
+    enforce_rate_limit(last_request_time, rate_limit)
+    increment_api_calls()  # Track API call
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 429:  # Rate limit exceeded
-                    retry_after = int(response.headers.get("Retry-After", "60"))
-                    logger.warning(f"Rate limit exceeded. Waiting {retry_after} seconds.")
-                    await asyncio.sleep(retry_after)
-                    return await make_api_request(url, method, headers, params, rate_limit)
-                
-                response.raise_for_status()
-                return await response.json()
-    except aiohttp.ClientError as e:
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        
+        if response.status_code == 429:  # Rate limit exceeded
+            retry_after = int(response.headers.get("Retry-After", "10"))
+            logger.warning(f"Rate limit exceeded. Waiting {retry_after} seconds.")
+            time.sleep(retry_after)
+            return make_api_request(url, method, headers, params, rate_limit)
+        
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
         logger.error(f"API request failed: {str(e)}")
         return {"error": str(e)}
-    except asyncio.TimeoutError:
-        logger.error(f"API request timed out: {url}")
-        return {"error": "Request timed out"}
     except Exception as e:
         logger.error(f"Unexpected error during API request: {str(e)}")
         return {"error": str(e)}
 
-async def fetch_coingecko(session: aiohttp.ClientSession, endpoint: str, params: Dict = None) -> Optional[Union[List, Dict]]:
+def fetch_coingecko(endpoint: str, params: Dict = None) -> Optional[Union[List, Dict]]:
     """
     Generic CoinGecko fetcher that exactly matches the successful example.
     
     Args:
-        session: aiohttp client session
         endpoint: API endpoint to fetch
         params: Optional query parameters
         
@@ -127,57 +130,56 @@ async def fetch_coingecko(session: aiohttp.ClientSession, endpoint: str, params:
     
     for retry in range(max_retries):
         # Apply rate limiting
-        async with cg_rate_limit_lock:
-            wait_time = COINGECKO_RATE_LIMIT_DELAY - (time.time() - cg_last_request_time)
-            if wait_time > 0:
-                logger.debug(f"CG Rate limiting. Wait: {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
-            cg_last_request_time = time.time()
+        wait_time = COINGECKO_RATE_LIMIT_DELAY - (time.time() - cg_last_request_time)
+        if wait_time > 0:
+            logger.debug(f"CG Rate limiting. Wait: {wait_time:.2f}s")
+            time.sleep(wait_time)
+        cg_last_request_time = time.time()
         
         try:
             logger.info(f"Fetching CG URL: {url} with params: {params}")
             logger.info(f"Headers: {headers}")
             
             # Make the request exactly as in the example
-            async with session.get(url, headers=headers, params=params, timeout=20) as response:
-                response_text = await response.text()
-                
-                if response.status == 200:
-                    try:
-                        data = json.loads(response_text)
-                        logger.info(f"Successfully received data from CoinGecko API")
-                        return data
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse JSON response: {response_text[:100]}...")
-                        return None
-                else:
-                    logger.error(f"CG request failed {url}: Status {response.status}, Response: {response_text[:100]}...")
-                    
-                    if response.status == 429:
-                        # Rate limit hit
-                        logger.warning(f"CG rate limit hit for {url}. Retrying after delay.")
-                        retry_delay *= 2  # Exponential backoff
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    elif retry < max_retries - 1:
-                        retry_delay *= 1.5
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    
+            response = requests.get(url, headers=headers, params=params, timeout=20)
+            response_text = response.text
+            
+            if response.status_code == 200:
+                try:
+                    data = json.loads(response_text)
+                    logger.info(f"Successfully received data from CoinGecko API")
+                    return data
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to parse JSON response: {response_text[:100]}...")
                     return None
+            else:
+                logger.error(f"CG request failed {url}: Status {response.status_code}, Response: {response_text[:100]}...")
+                
+                if response.status_code == 429:
+                    # Rate limit hit
+                    logger.warning(f"CG rate limit hit for {url}. Retrying after delay.")
+                    retry_delay *= 2  # Exponential backoff
+                    time.sleep(retry_delay)
+                    continue
+                elif retry < max_retries - 1:
+                    retry_delay *= 1.5
+                    time.sleep(retry_delay)
+                    continue
+                
+                return None
         
-        except asyncio.TimeoutError:
+        except requests.Timeout:
             logger.warning(f"CG request timeout for {url}")
             if retry < max_retries - 1:
                 retry_delay *= 1.5
-                await asyncio.sleep(retry_delay)
+                time.sleep(retry_delay)
                 continue
             return None
         except Exception as e:
             logger.error(f"Error fetching CG {url}: {e}")
             if retry < max_retries - 1:
                 retry_delay *= 1.5
-                await asyncio.sleep(retry_delay)
+                time.sleep(retry_delay)
                 continue
             return None
     
@@ -213,12 +215,11 @@ def calculate_pagination(total_tokens: int) -> List[Tuple[int, int]]:
     
     return pagination
 
-async def fetch_all_coingecko_market_data(session: aiohttp.ClientSession, number_of_tokens: int = 250) -> dict:
+def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
     """
     Fetches data from CG /coins/markets using the exact parameters that worked.
     
     Args:
-        session: aiohttp client session
         number_of_tokens: Number of top tokens by market cap to fetch (default: 250)
         
     Returns:
@@ -251,7 +252,7 @@ async def fetch_all_coingecko_market_data(session: aiohttp.ClientSession, number
             
             # Make API request
             endpoint = '/coins/markets'
-            data = await fetch_coingecko(session, endpoint, params)
+            data = fetch_coingecko(endpoint, params)
             
             if not data or not isinstance(data, list):
                 logger.warning(f"No valid data received for page {page_num}. Skipping.")
@@ -303,7 +304,7 @@ async def fetch_all_coingecko_market_data(session: aiohttp.ClientSession, number
             
             # Respect rate limiting between page requests
             if page_num < total_pages:
-                await asyncio.sleep(COINGECKO_RATE_LIMIT_DELAY)
+                time.sleep(COINGECKO_RATE_LIMIT_DELAY)
         
         if total_tokens_received < number_of_tokens:
             logger.warning(f"Requested {number_of_tokens} tokens but only received {total_tokens_received}. This appears to be all available tokens.")
@@ -314,12 +315,11 @@ async def fetch_all_coingecko_market_data(session: aiohttp.ClientSession, number
         logger.error(f"Error fetching CoinGecko market data: {e}", exc_info=True)
         return all_markets_data
 
-async def fetch_coin_volume(session: aiohttp.ClientSession, coin_id: str) -> Optional[float]:
+def fetch_coin_volume(coin_id: str) -> Optional[float]:
     """
     Helper to fetch 30d volume data for a single coin.
     
     Args:
-        session: aiohttp client session
         coin_id: CoinGecko coin ID
         
     Returns:
@@ -335,7 +335,7 @@ async def fetch_coin_volume(session: aiohttp.ClientSession, coin_id: str) -> Opt
         }
         
         endpoint = f"/coins/{coin_id}/market_chart"
-        data = await fetch_coingecko(session, endpoint, params)
+        data = fetch_coingecko(endpoint, params)
         
         if not data or 'total_volumes' not in data or not data['total_volumes']:
             logger.warning(f"No volume data received for {coin_id}")
@@ -356,14 +356,13 @@ async def fetch_coin_volume(session: aiohttp.ClientSession, coin_id: str) -> Opt
     
     except Exception as e:
         logger.error(f"Error fetching volume data for {coin_id}: {e}")
-        raise  # Re-raise to be caught by gather
+        return None
 
-async def fetch_all_coingecko_volumes(session: aiohttp.ClientSession, coin_ids: list) -> dict:
+def fetch_all_coingecko_volumes(coin_ids: list) -> dict:
     """
     Fetches 30d volume data from CG /coins/{id}/market_chart.
     
     Args:
-        session: aiohttp client session
         coin_ids: List of CoinGecko coin IDs
         
     Returns:
@@ -375,13 +374,13 @@ async def fetch_all_coingecko_volumes(session: aiohttp.ClientSession, coin_ids: 
     # Process coins one by one to avoid rate limiting issues
     for coin_id in coin_ids:
         try:
-            total_volume = await fetch_coin_volume(session, coin_id)
+            total_volume = fetch_coin_volume(coin_id)
             if total_volume is not None:
                 volume_data[coin_id] = total_volume
                 logger.info(f"Processed 30d volume for {coin_id}: ${total_volume:,.2f}")
             
             # Respect rate limiting between requests
-            await asyncio.sleep(COINGECKO_RATE_LIMIT_DELAY)
+            time.sleep(COINGECKO_RATE_LIMIT_DELAY)
         
         except Exception as e:
             logger.warning(f"Error processing volume for {coin_id}: {str(e)}")
@@ -390,7 +389,7 @@ async def fetch_all_coingecko_volumes(session: aiohttp.ClientSession, coin_ids: 
     logger.info(f"Successfully fetched 30d volume data for {len(volume_data)}/{len(coin_ids)} coins")
     return volume_data
 
-async def fetch_coingecko_data(symbol: str) -> Dict:
+def fetch_coingecko_data(symbol: str) -> Dict:
     """
     Fetch market data from CoinGecko API for a given symbol.
     
@@ -404,7 +403,7 @@ async def fetch_coingecko_data(symbol: str) -> Dict:
     
     # First, get the coin ID
     search_url = f"{COINGECKO_API_BASE}/search"
-    search_response = await make_api_request(
+    search_response = make_api_request(
         url=search_url,
         params={"query": symbol},
         rate_limit=COINGECKO_RATE_LIMIT_DELAY,
@@ -431,7 +430,7 @@ async def fetch_coingecko_data(symbol: str) -> Dict:
     
     # Fetch detailed market data
     market_url = f"{COINGECKO_API_BASE}/coins/{coin_id}"
-    market_response = await make_api_request(
+    market_response = make_api_request(
         url=market_url,
         params={
             "localization": "false",
@@ -468,13 +467,13 @@ async def fetch_coingecko_data(symbol: str) -> Dict:
         "coingecko_ath_change_percentage": market_data.get("ath_change_percentage", {}).get("usd")
     }
 
-async def fetch_coingecko_historical_volume(coin_id: str, days: int = 30) -> float:
+def fetch_coingecko_historical_volume(coin_id: str, number_of_days: int = 30) -> float:
     """
     Fetch historical volume data from CoinGecko API.
     
     Args:
         coin_id: The CoinGecko coin ID
-        days: Number of days of historical data to fetch
+        number_of_days: Number of days of historical data to fetch (default: 30)
         
     Returns:
         Total volume over the specified period or 0 if error
@@ -482,9 +481,9 @@ async def fetch_coingecko_historical_volume(coin_id: str, days: int = 30) -> flo
     global cg_last_request_time
     
     url = f"{COINGECKO_API_BASE}/coins/{coin_id}/market_chart"
-    response = await make_api_request(
+    response = make_api_request(
         url=url,
-        params={"vs_currency": "usd", "days": str(days), "interval": "daily"},
+        params={"vs_currency": "usd", "days": str(number_of_days), "interval": "daily"},
         rate_limit=COINGECKO_RATE_LIMIT_DELAY,
         last_request_time=cg_last_request_time
     )
