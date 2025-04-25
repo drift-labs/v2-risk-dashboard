@@ -125,15 +125,15 @@ def fetch_coingecko_market_data() -> List[Dict]:
     
 def fetch_driftpy_data(vat: Vat) -> Dict:
     """
-    Fetches market data from DriftPy to check for perp market listings.
+    Fetches market data from DriftPy to check for perp and spot market listings.
     
     Args:
         vat: Vat instance containing market data
     
     Returns:
-        Dict: Dictionary containing Drift perp market listing status for each coin
+        Dict: Dictionary containing Drift market data with nested perp and spot markets
     """
-    logger.info("Fetching DriftPy data to check perp market listings...")
+    logger.info("Fetching DriftPy data to check perp and spot market listings...")
     
     try:
         # Track long and short positions separately for each market
@@ -178,15 +178,17 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
 
         logger.info(f"Found positions in {len(market_long_positions)} markets")
         
-        # Get all perp markets from vat
-        perp_markets = {}
+        # Initialize drift markets dictionary
+        drift_markets = {}
+        
+        # Process perpetual markets
         # Use values() instead of items() since MarketMap is an object with specific methods
         for market in vat.perp_markets.values():
             try:
                 # Get market name and clean it
-                market_name = bytes(market.data.name).decode('utf-8').strip('\x00')
+                market_name = bytes(market.data.name).decode('utf-8').strip('\x00').strip()
                 # Extract symbol from market name (e.g., "BTC-PERP" -> "BTC")
-                symbol = market_name.split('-')[0].upper()
+                symbol = market_name.split('-')[0].upper().strip()
                 
                 # Get oracle price from perp_oracles
                 market_price = vat.perp_oracles.get(market.data.market_index)
@@ -210,24 +212,93 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
                 base_oi_readable = base_oi / (10 ** base_decimals)
                 oi_usd = base_oi_readable * oracle_price
                 
-                # Include all required drift data fields with default values
-                perp_markets[symbol] = {
-                    "drift_is_listed_perp": "true",
-                    "drift_perp_market": market_name,
-                    "drift_is_listed_spot": "false",  # Default value
-                    "drift_spot_market": None,
-                    "drift_oracle_price": oracle_price,
-                    "drift_volume_30d": 0.0,  # Default value, should be calculated if available
-                    "drift_max_leverage": float(market.data.margin_ratio_initial),  # This might need conversion
-                    "drift_open_interest": oi_usd,
-                    "drift_funding_rate_1h": float(market.data.amm.last_funding_rate) / 1e6 * 100  # Convert to hourly percentage
+                # Initialize symbol entry if not exists
+                if symbol not in drift_markets:
+                    drift_markets[symbol] = {
+                        "drift_is_listed_perp": "true",
+                        "drift_is_listed_spot": "false",
+                        "drift_perp_markets": {},
+                        "drift_spot_markets": {},
+                        "drift_total_volume_30d": 0.0,
+                        "drift_max_leverage": float(market.data.margin_ratio_initial),
+                        "drift_open_interest": oi_usd,
+                        "drift_funding_rate_1h": float(market.data.amm.last_funding_rate) / 1e6 * 100
+                    }
+                
+                # Add perp market data
+                drift_markets[symbol]["drift_perp_markets"][market_name] = {
+                    "drift_perp_oracle_price": oracle_price,
+                    "drift_volume_30d": 0.0,  # Will be updated when volume data is available
                 }
+                
             except Exception as e:
                 logger.error(f"Error processing perp market: {e}")
                 continue
         
-        logger.info(f"Found {len(perp_markets)} perp markets on Drift")
-        return perp_markets
+        logger.info(f"Found {len(drift_markets)} perpetual markets on Drift")
+        
+        # Process spot markets
+        logger.info("Processing spot markets from Vat...")
+        spot_market_count = sum(1 for _ in vat.spot_markets.values())
+        logger.info(f"Found {spot_market_count} spot markets in vat.spot_markets")
+        
+        # Process each spot market
+        for market in vat.spot_markets.values():
+            try:
+                # Get market name and clean it
+                market_name = bytes(market.data.name).decode('utf-8').strip('\x00').strip()
+                logger.info(f"Processing spot market: {market_name} (market_index: {market.data.market_index})")
+                
+                # Extract symbol with special handling for BTC variants
+                raw_symbol = market_name.upper().strip()
+                logger.info(f"Raw symbol before BTC check: {raw_symbol}")
+                
+                if raw_symbol in ['WBTC', 'CBBTC']:
+                    symbol = 'BTC'
+                    logger.info(f"Found BTC variant: {raw_symbol}, mapping to {symbol}")
+                else:
+                    symbol = raw_symbol.replace('W', '').strip()
+                
+                # Get spot oracle price
+                market_price = vat.spot_oracles.get(market.data.market_index)
+                if market_price is None:
+                    logger.warning(f"No oracle price found for market {raw_symbol} (index: {market.data.market_index})")
+                    continue
+                
+                spot_oracle_price = float(market_price.price) / PRICE_PRECISION
+                logger.info(f"Got oracle price for {raw_symbol}: {spot_oracle_price}")
+                
+                # Initialize or update symbol entry
+                if symbol not in drift_markets:
+                    logger.info(f"Initializing new market entry for symbol {symbol}")
+                    drift_markets[symbol] = {
+                        "drift_is_listed_perp": "false",
+                        "drift_is_listed_spot": "true",
+                        "drift_perp_markets": {},
+                        "drift_spot_markets": {},
+                        "drift_total_volume_30d": 0.0,
+                        "drift_max_leverage": 0.0,
+                        "drift_open_interest": 0.0,
+                        "drift_funding_rate_1h": 0.0
+                    }
+                else:
+                    logger.info(f"Updating existing market entry for symbol {symbol}")
+                    drift_markets[symbol]["drift_is_listed_spot"] = "true"
+                
+                # Add spot market data - use the original market name to preserve WBTC/CBBTC distinction
+                logger.info(f"Adding spot market {raw_symbol} to {symbol}'s drift_spot_markets")
+                drift_markets[symbol]["drift_spot_markets"][raw_symbol] = {
+                    "drift_spot_oracle_price": spot_oracle_price,
+                    "drift_volume_30d": 0.0,  # Will be updated when volume data is available
+                }
+                logger.info(f"Current spot markets for {symbol}: {list(drift_markets[symbol]['drift_spot_markets'].keys())}")
+                
+            except Exception as e:
+                logger.error(f"Error processing spot market: {e}")
+                continue
+        
+        logger.info(f"Completed market processing. Final market count: {len(drift_markets)}")
+        return drift_markets
         
     except Exception as e:
         logger.error(f"Error in fetch_driftpy_data: {e}")
@@ -238,19 +309,32 @@ def fetch_drift_data_api_data() -> Dict:
     Fetches market data from Drift API (placeholder implementation).
     
     Returns:
-        Dict: Dictionary containing Drift API data for each coin
+        Dict: Dictionary containing Drift API data for each coin with nested market data
     """
     logger.info("Fetching Drift API data (placeholder)...")
     
-    # Placeholder data structure matching expected format
+    # Placeholder data structure matching new nested format
     return {
         "BTC": {
             "drift_is_listed_spot": "true",
             "drift_is_listed_perp": "true",
-            "drift_spot_market": "wBTC",
-            "drift_perp_market": "BTC-PERP",
-            "drift_oracle_price": 93500.0,
-            "drift_volume_30d": 200000000.0,
+            "drift_perp_markets": {
+                "BTC-PERP": {
+                    "drift_perp_oracle_price": 93500.0,
+                    "drift_volume_30d": 150000000.0,
+                }
+            },
+            "drift_spot_markets": {
+                "wBTC": {
+                    "drift_spot_oracle_price": 93450.0,
+                    "drift_volume_30d": 25000000.0,
+                },
+                "cbBTC": {
+                    "drift_spot_oracle_price": 93425.0,
+                    "drift_volume_30d": 25000000.0,
+                }
+            },
+            "drift_total_volume_30d": 200000000.0,  # Sum of all market volumes
             "drift_max_leverage": 10.0,
             "drift_open_interest": 150000000.0,
             "drift_funding_rate_1h": 0.001
@@ -258,101 +342,191 @@ def fetch_drift_data_api_data() -> Dict:
         "ETH": {
             "drift_is_listed_spot": "true",
             "drift_is_listed_perp": "true",
-            "drift_spot_market": "wETH",
-            "drift_perp_market": "ETH-PERP",
-            "drift_oracle_price": 5200.0,
-            "drift_volume_30d": 150000000.0,
+            "drift_perp_markets": {
+                "ETH-PERP": {
+                    "drift_perp_oracle_price": 5200.0,
+                    "drift_volume_30d": 100000000.0,
+                }
+            },
+            "drift_spot_markets": {
+                "wETH": {
+                    "drift_spot_oracle_price": 5195.0,
+                    "drift_volume_30d": 50000000.0,
+                }
+            },
+            "drift_total_volume_30d": 150000000.0,  # Sum of all market volumes
             "drift_max_leverage": 10.0,
             "drift_open_interest": 100000000.0,
             "drift_funding_rate_1h": 0.0008
         }
     }
 
-
-def score_assets(market_data: List[Dict]) -> List[Dict]:
+def calculate_volume_score(volume_30d: float) -> float:
     """
-    Scores assets based on aggregated market data and provides Drift-specific recommendations.
+    Calculate a score based on 30-day trading volume.
     
     Args:
-        market_data: List of dictionaries containing aggregated market data
+        volume_30d (float): 30-day trading volume in USD
         
     Returns:
-        List[Dict]: Original market data with added scoring and Drift-specific recommendations
+        float: Volume score between 0 and 50
     """
-    logger.info("Scoring assets and generating Drift recommendations...")
+    # Score based on volume tiers (adjust thresholds as needed)
+    if volume_30d >= 1_000_000_000:  # $1B+
+        return 50.0
+    elif volume_30d >= 500_000_000:  # $500M+
+        return 40.0
+    elif volume_30d >= 100_000_000:  # $100M+
+        return 30.0
+    elif volume_30d >= 50_000_000:   # $50M+
+        return 20.0
+    elif volume_30d >= 10_000_000:   # $10M+
+        return 10.0
+    else:
+        return max(0.0, min(10.0, volume_30d / 1_000_000))  # Linear score up to $10M
+
+def calculate_leverage_score(max_leverage: float) -> float:
+    """
+    Calculate a score based on maximum leverage offered.
     
-    scored_data = []
-    for asset in market_data:
-        asset_copy = asset.copy()
+    Args:
+        max_leverage (float): Maximum leverage offered
         
-        # Calculate component scores (placeholder logic)
-        market_cap_score = min(20.0, asset_copy["coingecko_data"]["coingecko_market_cap"] / 1e11)
-        global_vol_score = min(35.0, asset_copy["coingecko_data"]["coingecko_total_volume_24h"] / 1e9)
+    Returns:
+        float: Leverage score between 0 and 50
+    """
+    # Score based on leverage tiers
+    if max_leverage >= 20:
+        return 50.0
+    elif max_leverage >= 15:
+        return 40.0
+    elif max_leverage >= 10:
+        return 30.0
+    elif max_leverage >= 5:
+        return 20.0
+    elif max_leverage > 0:
+        return 10.0
+    else:
+        return 0.0
+
+def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
+    """
+    Score assets based on Drift market data and other metrics.
+    
+    Args:
+        assets (List[Dict]): List of asset dictionaries with market data
+        drift_data (Dict): Nested dictionary containing Drift market data for perp and spot markets
         
-        # Calculate Drift activity scores if the asset is listed
-        drift_activity_score = 0.0
-        if "drift_data" in asset_copy and asset_copy["drift_data"].get("drift_is_listed_perp") == "true":
-            volume_on_drift = min(15.0, asset_copy["drift_data"]["drift_volume_30d"] / 1e8)
-            oi_on_drift = min(15.5, asset_copy["drift_data"]["drift_open_interest"] / 1e8)
-            drift_activity_score = volume_on_drift + oi_on_drift
+    Returns:
+        List[Dict]: List of scored assets with additional metrics
+    """
+    scored_assets = []
+    
+    for asset in assets:
+        symbol = asset.get('symbol', '').upper()
         
-        # Calculate partial scores
-        partial_mc = min(20.0, market_cap_score)
-        partial_global_volume = min(18.0, global_vol_score / 2)
-        partial_volume_on_drift = min(15.0, drift_activity_score / 2)
-        partial_oi_on_drift = min(15.5, drift_activity_score / 2)
+        # Get Drift market data if available
+        market_info = drift_data.get(symbol, {})
         
-        # Calculate overall score
-        overall_score = (
-            partial_mc +
-            partial_global_volume +
-            partial_volume_on_drift +
-            partial_oi_on_drift
-        )
+        # Calculate total volume from all markets
+        total_volume = 0.0
         
-        # Add scoring information
-        asset_copy["scoring"] = {
-            "overall_score": overall_score,
-            "market_cap_score": market_cap_score,
-            "global_vol_score": global_vol_score,
-            "drift_activity_score": drift_activity_score,
-            "partial_mc": partial_mc,
-            "partial_global_volume": partial_global_volume,
-            "partial_volume_on_drift": partial_volume_on_drift,
-            "partial_oi_on_drift": partial_oi_on_drift
+        # Process perp markets
+        perp_markets = market_info.get('drift_perp_markets', {})
+        for perp_data in perp_markets.values():
+            total_volume += perp_data.get('drift_volume_30d', 0.0)
+            
+        # Process spot markets
+        spot_markets = market_info.get('drift_spot_markets', {})
+        for spot_data in spot_markets.values():
+            total_volume += spot_data.get('drift_volume_30d', 0.0)
+        
+        # Calculate scores using helper functions
+        volume_score = calculate_volume_score(total_volume)
+        leverage_score = calculate_leverage_score(market_info.get('drift_max_leverage', 0.0))
+        
+        # Combine scores (equal weighting for now)
+        total_score = volume_score + leverage_score
+        
+        # Create scored asset dictionary with nested drift_data
+        scored_asset = {
+            **asset,  # Include all original asset data
+            'volume_score': volume_score,
+            'leverage_score': leverage_score,
+            'total_score': total_score
         }
         
-        # Determine recommendation based on scores
-        if overall_score >= 80:
-            if not asset_copy["drift_data"].get("drift_is_listed_perp") == "true":
-                recommendation = "List"
-            elif asset_copy["drift_data"]["drift_max_leverage"] < 20:
-                recommendation = "Increase_Leverage"
-            else:
-                recommendation = "Keep"
-        elif overall_score >= 60:
-            if asset_copy["drift_data"].get("drift_is_listed_perp") == "true":
-                recommendation = "Keep"
-            else:
-                recommendation = "Monitor"
-        elif overall_score >= 40:
-            if asset_copy["drift_data"].get("drift_is_listed_perp") == "true":
-                if asset_copy["drift_data"]["drift_max_leverage"] > 5:
-                    recommendation = "Decrease_Leverage"
-                else:
-                    recommendation = "Monitor"
-            else:
-                recommendation = "Monitor"
+        # If there's no drift data, initialize with default structure
+        if symbol not in drift_data:
+            scored_asset['drift_data'] = {
+                "drift_is_listed_spot": "false",
+                "drift_is_listed_perp": "false",
+                "drift_perp_markets": {},
+                "drift_spot_markets": {},
+                "drift_total_volume_30d": 0.0,
+                "drift_max_leverage": 0.0,
+                "drift_open_interest": 0.0,
+                "drift_funding_rate_1h": 0.0
+            }
         else:
-            if asset_copy["drift_data"].get("drift_is_listed_perp") == "true":
-                recommendation = "Delist"
-            else:
-                recommendation = "Ignore"
+            scored_asset['drift_data'] = drift_data[symbol]
+            # Update total volume in drift_data
+            scored_asset['drift_data']['drift_total_volume_30d'] = total_volume
         
-        asset_copy["recommendation"] = recommendation
-        scored_data.append(asset_copy)
+        scored_assets.append(scored_asset)
     
-    return scored_data
+    # Sort assets by total score in descending order
+    scored_assets.sort(key=lambda x: x['total_score'], reverse=True)
+    
+    return scored_assets
+
+def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
+    """
+    Process Drift markets data and update drift_data dictionary with the new nested structure.
+    
+    Args:
+        scored_data (List[Dict]): List of dictionaries containing scored market data
+        drift_data (Dict): Dictionary containing Drift market data with nested perp and spot markets
+        
+    Returns:
+        Dict: Updated drift_data dictionary
+    """
+    processed_drift_data = {}
+    
+    for asset in scored_data:
+        symbol = asset.get('symbol', '')
+        if not symbol:
+            continue
+            
+        # Get drift data for this symbol if it exists
+        symbol_drift_data = drift_data.get(symbol, {})
+        
+        # Initialize default structure
+        processed_drift_data[symbol] = {
+            "drift_is_listed_perp": symbol_drift_data.get('drift_is_listed_perp', 'false'),
+            "drift_is_listed_spot": symbol_drift_data.get('drift_is_listed_spot', 'false'),
+            "drift_perp_markets": symbol_drift_data.get('drift_perp_markets', {}),
+            "drift_spot_markets": symbol_drift_data.get('drift_spot_markets', {}),
+            "drift_total_volume_30d": 0.0,  # Will be calculated from market volumes
+            "drift_max_leverage": symbol_drift_data.get('drift_max_leverage', 0.0),
+            "drift_open_interest": symbol_drift_data.get('drift_open_interest', 0.0),
+            "drift_funding_rate_1h": symbol_drift_data.get('drift_funding_rate_1h', 0.0)
+        }
+        
+        # Calculate total volume across all markets
+        total_volume = 0.0
+        
+        # Sum volumes from perp markets
+        for market_data in processed_drift_data[symbol]["drift_perp_markets"].values():
+            total_volume += market_data.get("drift_volume_30d", 0.0)
+            
+        # Sum volumes from spot markets
+        for market_data in processed_drift_data[symbol]["drift_spot_markets"].values():
+            total_volume += market_data.get("drift_volume_30d", 0.0)
+            
+        processed_drift_data[symbol]["drift_total_volume_30d"] = total_volume
+    
+    return processed_drift_data
 
 def main(vat: Vat) -> List[Dict]:
     """
@@ -386,7 +560,8 @@ def main(vat: Vat) -> List[Dict]:
                     "drift_is_listed_perp": "false",
                     "drift_spot_market": None,
                     "drift_perp_market": None,
-                    "drift_oracle_price": None,
+                    "drift_perp_oracle_price": None,
+                    "drift_spot_oracle_price": None,
                     "drift_volume_30d": 0.0,
                     "drift_max_leverage": 0.0,
                     "drift_open_interest": 0.0,
@@ -394,7 +569,10 @@ def main(vat: Vat) -> List[Dict]:
                 }
         
         # Score the aggregated data
-        scored_data = score_assets(coingecko_data)
+        scored_data = score_assets(coingecko_data, drift_data)
+        
+        # Process Drift markets data and update drift_data dictionary
+        drift_data = process_drift_markets(scored_data, drift_data)
         
         logger.info(f"Successfully aggregated and scored data for {len(scored_data)} assets")
         return scored_data
