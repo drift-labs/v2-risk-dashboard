@@ -90,18 +90,6 @@ if __name__ == "__main__":
             icon="💰",
         ),
         st.Page(
-            list_recommender_page,
-            url_path="list-recommender",
-            title="List Recommender (BETA)",
-            icon="📝",
-        ),
-        st.Page(
-            delist_recommender_page,
-            url_path="delist-recommender",
-            title="Delist Recommender",
-            icon="🚫",
-        ),
-        st.Page(
             market_recommender_page,
             url_path="market-recommender",
             title="Market Recommender",
