@@ -1,32 +1,4 @@
-# This is the new version of the gecko market recommender which makes use of the /backend/utils/coingecko_api.py utility script.
-
-"""
-Follow this high level structure when writing the new script. 
-Only focus on one section at a time. 
-I will instruct you which section we are working on.
-If I do not instruct you, ask me which section you are working on.
-This script will use synchronous code instead of asynchronous code in the previous version.
-
-def fetch_market_data():
-    # Minimal working data retrieval with ccxt
-    pass
-
-def score_assets(market_data):
-    # Single simplified scoring method for all assets
-    pass
-
-def categorize_assets(scored_assets):
-    # Clearly separate lists: to_list, to_delist, leverage_up, leverage_down
-    pass
-
-def main():
-    data = fetch_market_data()
-    scored = score_assets(data)
-    categorized = categorize_assets(scored)
-    # output simple DataFrames for Streamlit
-    return categorized
-
-"""
+# This is the new version of the market recommender which makes use of the coingecko API via the /backend/utils/coingecko_api.py utility script.
 
 import logging
 from typing import Dict, List
@@ -227,6 +199,10 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
                 base_oi_readable = base_oi / (10 ** base_decimals)
                 oi_usd = base_oi_readable * oracle_price
                 
+                # Calculate max leverage from margin ratio initial
+                initial_margin_ratio = market.data.margin_ratio_initial / 10000
+                max_leverage = int(1 / initial_margin_ratio) if initial_margin_ratio > 0 else 0
+                
                 # Initialize symbol entry if not exists
                 if normalized_symbol not in drift_markets:
                     drift_markets[normalized_symbol] = {
@@ -236,7 +212,7 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
                         "drift_spot_markets": {},
                         "drift_total_quote_volume_30d": 0.0,
                         "drift_total_base_volume_30d": 0.0,
-                        "drift_max_leverage": float(market.data.margin_ratio_initial),
+                        "drift_max_leverage": max_leverage,
                         "drift_open_interest": oi_usd,
                         "drift_funding_rate_1h": float(market.data.amm.last_funding_rate) / 1e6 * 100
                     }
@@ -361,7 +337,6 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         
         if not DRIFT_DATA_API_AUTH:
             logger.error("DRIFT_DATA_API_AUTH environment variable not set")
-            return {"success": False, "records": [], "meta": {"totalRecords": 0}}
         
         last_request_time = getattr(fetch_api_page, 'last_request_time', 0)
         
@@ -563,53 +538,152 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
     
     return drift_markets
 
-def calculate_volume_score(volume_30d: float) -> float:
+def calculate_drift_volume_score(volume_30d: float) -> float:
     """
-    Calculate a score based on 30-day trading volume.
+    Calculate a score based on Drift Protocol 30-day trading volume.
     
     Args:
         volume_30d (float): 30-day trading volume in USD
         
     Returns:
-        float: Volume score between 0 and 50
+        float: Volume score between 0 and 25
     """
-    # Score based on volume tiers (adjust thresholds as needed)
-    if volume_30d >= 1_000_000_000:  # $1B+
-        return 50.0
-    elif volume_30d >= 500_000_000:  # $500M+
-        return 40.0
-    elif volume_30d >= 100_000_000:  # $100M+
-        return 30.0
-    elif volume_30d >= 50_000_000:   # $50M+
+    # Score based on volume tiers according to the scoring breakdown
+    if volume_30d >= 500_000_000:  # $500M+
+        return 25.0
+    elif volume_30d >= 100_000_000:  # $100M - $499M
         return 20.0
-    elif volume_30d >= 10_000_000:   # $10M+
+    elif volume_30d >= 25_000_000:  # $25M - $99M
+        return 15.0
+    elif volume_30d >= 1_000_000:  # $1M - $24M
         return 10.0
-    else:
-        return max(0.0, min(10.0, volume_30d / 1_000_000))  # Linear score up to $10M
+    elif volume_30d >= 100_000:  # $100K - $999K
+        return 5.0
+    else:  # < $100K
+        return 0.0
 
-def calculate_leverage_score(max_leverage: float) -> float:
+def calculate_open_interest_score(open_interest: float) -> float:
     """
-    Calculate a score based on maximum leverage offered.
+    Calculate a score based on Drift Protocol open interest.
     
     Args:
-        max_leverage (float): Maximum leverage offered
+        open_interest (float): Open interest in USD
         
     Returns:
-        float: Leverage score between 0 and 50
+        float: Open interest score between 0 and 25
     """
-    # Score based on leverage tiers
-    if max_leverage >= 20:
-        return 50.0
-    elif max_leverage >= 15:
-        return 40.0
-    elif max_leverage >= 10:
-        return 30.0
-    elif max_leverage >= 5:
+    # Score based on OI tiers according to the scoring breakdown
+    if open_interest >= 5_000_000:  # $5M+
+        return 25.0
+    elif open_interest >= 1_000_000:  # $1M - $4.9M
         return 20.0
-    elif max_leverage > 0:
+    elif open_interest >= 250_000:  # $250K - $999K
+        return 15.0
+    elif open_interest >= 50_000:  # $50K - $249K
         return 10.0
-    else:
+    elif open_interest >= 5_000:  # $5K - $49K
+        return 5.0
+    else:  # < $5K
         return 0.0
+
+def calculate_global_volume_score(daily_volume: float) -> float:
+    """
+    Calculate a score based on global trading volume from CoinGecko.
+    
+    Args:
+        daily_volume (float): Daily trading volume in USD
+        
+    Returns:
+        float: Global volume score between 0 and 40
+    """
+    # Score based on global volume tiers according to the scoring breakdown
+    if daily_volume >= 500_000_000:  # $500M+
+        return 40.0
+    elif daily_volume >= 250_000_000:  # $250M - $499M
+        return 30.0
+    elif daily_volume >= 100_000_000:  # $100M - $249M
+        return 20.0
+    elif daily_volume >= 25_000_000:  # $25M - $99M
+        return 10.0
+    elif daily_volume >= 5_000_000:  # $5M - $24M
+        return 5.0
+    else:  # < $5M
+        return 0.0
+
+def calculate_fdv_score(fdv: float) -> float:
+    """
+    Calculate a score based on Fully Diluted Valuation (FDV).
+    
+    Args:
+        fdv (float): Fully Diluted Valuation in USD
+        
+    Returns:
+        float: FDV score between 0 and 10
+    """
+    # Score based on FDV tiers according to the scoring breakdown
+    if fdv >= 10_000_000_000:  # $10B+
+        return 10.0
+    elif fdv >= 1_000_000_000:  # $1B - $9.9B
+        return 8.0
+    elif fdv >= 500_000_000:  # $500M - $999M
+        return 6.0
+    elif fdv >= 100_000_000:  # $100M - $499M
+        return 2.0
+    else:  # < $100M
+        return 0.0
+
+def get_market_recommendation(total_score: float, current_leverage: float) -> str:
+    """
+    Determine market recommendation based on total score and current leverage.
+    
+    Args:
+        total_score (float): Total score from all criteria (0-100)
+        current_leverage (float): Current maximum leverage offered
+        
+    Returns:
+        str: Recommendation (List, Increase Leverage, Decrease Leverage, Delist, or No Action)
+    """
+    # Define upper and lower bound thresholds for different leverage levels
+    SCORE_UB = {
+        0: 45,   # Unlisted
+        2: float('inf'),  # No upper bound for 2x (cannot increase further)
+        4: 75,
+        5: 80,
+        10: 90,
+        20: 95
+    }
+    
+    SCORE_LB = {
+        0: 0,    # Not applicable for unlisted
+        2: 40,   # Delist threshold for 2x
+        4: 50,
+        5: 60,
+        10: 70,
+        20: 75
+    }
+    
+    # Find the closest leverage level for thresholds
+    leverage_levels = sorted(SCORE_UB.keys())
+    closest_leverage = leverage_levels[0]
+    
+    for level in leverage_levels:
+        if level <= current_leverage:
+            closest_leverage = level
+    
+    # Apply decision logic
+    if current_leverage == 0:  # Unlisted
+        if total_score >= SCORE_UB[0]:
+            return "List"
+        else:
+            return "Do Nothing"
+    elif current_leverage == 2 and total_score <= SCORE_LB[2]:
+        return "Delist"
+    elif total_score >= SCORE_UB.get(closest_leverage, float('inf')):
+        return "Increase Leverage"
+    elif total_score <= SCORE_LB.get(closest_leverage, 0) and closest_leverage > 2:
+        return "Decrease Leverage"
+    else:
+        return "No Action"
 
 def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
     """
@@ -630,23 +704,41 @@ def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
         # Get Drift market data if available
         market_info = drift_data.get(symbol, {})
         
-        # Calculate total volumes from all markets
-        total_quote_volume = market_info.get('drift_total_quote_volume_30d', 0.0)
-        total_base_volume = market_info.get('drift_total_base_volume_30d', 0.0)
-            
-        # Calculate scores using helper functions
-        volume_score = calculate_volume_score(total_quote_volume)
-        leverage_score = calculate_leverage_score(market_info.get('drift_max_leverage', 0.0))
+        # Get raw metrics
+        drift_volume_30d = market_info.get('drift_total_quote_volume_30d', 0.0)
+        drift_open_interest = market_info.get('drift_open_interest', 0.0)
+        global_daily_volume = asset.get('coingecko_data', {}).get('coingecko_total_volume_24h', 0.0)
+        fdv = asset.get('coingecko_data', {}).get('coingecko_fully_diluted_valuation', 0.0)
+        current_leverage = market_info.get('drift_max_leverage', 0.0)
         
-        # Combine scores (equal weighting for now)
-        total_score = volume_score + leverage_score
+        # Calculate component scores
+        drift_volume_score = calculate_drift_volume_score(drift_volume_30d)
+        open_interest_score = calculate_open_interest_score(drift_open_interest)
+        global_volume_score = calculate_global_volume_score(global_daily_volume)
+        fdv_score = calculate_fdv_score(fdv)
+        
+        # Calculate total score
+        total_score = drift_volume_score + open_interest_score + global_volume_score + fdv_score
+        
+        # Get recommendation
+        recommendation = get_market_recommendation(total_score, current_leverage)
         
         # Create scored asset dictionary with nested drift_data
         scored_asset = {
             **asset,  # Include all original asset data
-            'volume_score': volume_score,
-            'leverage_score': leverage_score,
-            'total_score': total_score
+            'drift_volume_score': drift_volume_score,
+            'open_interest_score': open_interest_score,
+            'global_volume_score': global_volume_score,
+            'fdv_score': fdv_score,
+            'total_score': total_score,
+            'recommendation': recommendation,
+            'raw_metrics': {
+                'drift_volume_30d': drift_volume_30d,
+                'drift_open_interest': drift_open_interest,
+                'global_daily_volume': global_daily_volume,
+                'fdv': fdv,
+                'current_max_leverage': current_leverage
+            }
         }
         
         # If there's no drift data, initialize with default structure

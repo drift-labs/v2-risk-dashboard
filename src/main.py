@@ -22,6 +22,7 @@ from page.vaults import vaults_page
 from page.welcome import welcome_page
 from page.list_recommender import list_recommender_page
 from page.delist_recommender import delist_recommender_page
+from page.market_recommender import market_recommender_page
 
 load_dotenv()
 
@@ -99,6 +100,12 @@ if __name__ == "__main__":
             url_path="delist-recommender",
             title="Delist Recommender",
             icon="🚫",
+        ),
+        st.Page(
+            market_recommender_page,
+            url_path="market-recommender",
+            title="Market Recommender",
+            icon="🚀",
         ),
     ]
 
