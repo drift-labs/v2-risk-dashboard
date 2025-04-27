@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import time
 from lib.api import fetch_api_data
 
 # --- Constants ---
-DEFAULT_NUMBER_OF_TOKENS = 7  # Hardcoded number of tokens to analyze
+DEFAULT_NUMBER_OF_TOKENS = 50  # Hardcoded number of tokens to analyze
 DEBUG_MODE = True  # Enable debug logging
+RETRY_DELAY_SECONDS = 5 # How long to wait before retrying when processing
 
 # --- Helper Functions ---
 
@@ -44,42 +46,61 @@ def style_recommendation(rec):
     if rec == 'List':
         color = 'green'
     elif rec == 'Increase Leverage':
-        color = 'blue'
+        color = 'deepskyblue'
     elif rec == 'Decrease Leverage':
         color = 'orange'
     elif rec == 'Delist':
         color = 'red'
-    elif rec == 'No Action':
+    elif rec in ['Maintain Leverage', 'Keep Unlisted']: # Updated recommendations
         color = 'gray'
     else:
-        color = 'black'
+        color = 'white' # Default for unknown recommendations
     return f'color: {color}; font-weight: bold;'
 
-@st.cache_data(ttl=60) # Cache data for 1 minutes
-def fetch_market_recommendations():
-    """Fetches market recommendations from the backend API."""
+# Assuming fetch_api_data returns:
+# - List[dict]: on successful data fetch (200 OK)
+# - Dict with "result": "processing": if backend returned 202 Accepted
+# - Dict with "error": "message": on backend error or network issue
+# - None: Potentially on initial cache miss before 202 is returned (or if retry logic within fetch_api_data handles it that way)
+@st.cache_data(ttl=60) # Cache data for 1 minute
+def fetch_market_recommendations_cached():
+    """Fetches market recommendations from the backend API. Handles processing state."""
     try:
-        # Only log on actual API calls (not reruns)
+        # Only log on actual API calls (not reruns from cache)
         if DEBUG_MODE:
-            print("Fetching market recommendations from API")
+            print(f"[{time.strftime('%X')}] Attempting to fetch/get market recommendations from cache/API")
             endpoint = "market-recommender"
             path = "market-data"
             params = {"number_of_tokens": DEFAULT_NUMBER_OF_TOKENS}
             print(f"API call details: endpoint={endpoint}, path={path}, params={params}")
-        
+
+        # The core fetch_api_data function (from lib.api) needs to handle the 202 status.
+        # Let's assume it returns a specific dictionary `{"result": "processing", ...}`
+        # when it receives a 202 from the backend, and handles retries internally or signals back.
         response = fetch_api_data(
-            "market-recommender", 
-            "market-data", 
+            "market-recommender",
+            "market-data",
             params={"number_of_tokens": DEFAULT_NUMBER_OF_TOKENS},
-            retry=True
+            # retry parameter might be internal to fetch_api_data now
+            # or removed if the 202 handling implies polling/retrying
         )
-        
+
         if DEBUG_MODE:
-            print("Successfully fetched data from API.")
-        
+            if isinstance(response, list):
+                 print(f"[{time.strftime('%X')}] Successfully fetched data ({len(response)} items).")
+            elif isinstance(response, dict) and response.get("result") == "processing":
+                 print(f"[{time.strftime('%X')}] Received 'processing' status from API.")
+            elif isinstance(response, dict) and "error" in response:
+                 print(f"[{time.strftime('%X')}] Received error from API: {response['error']}")
+            elif response is None:
+                 print(f"[{time.strftime('%X')}] Received None from API (initial miss?).")
+            else:
+                 print(f"[{time.strftime('%X')}] Received unexpected response type from API: {type(response)}")
+
+
         return response
     except Exception as e:
-        error_message = f"An error occurred while fetching data: {e}"
+        error_message = f"An error occurred in fetch_market_recommendations_cached: {e}"
         if DEBUG_MODE:
             print(f"ERROR: {error_message}")
             import traceback
@@ -92,218 +113,219 @@ def fetch_market_recommendations():
 def market_recommender_page():
     """
     Streamlit page for displaying market recommendations for Drift.
-    Fetches pre-calculated data from a backend API.
+    Fetches pre-calculated data from a backend API, handling processing states.
     """
-    # Initialize request flag if not present
-    if "api_request_in_progress" not in st.session_state:
-        st.session_state.api_request_in_progress = False
-    
     st.title("📈 Market Recommender")
     st.markdown("This page provides recommendations for listing, delisting, or adjusting leverage for markets based on various metrics calculated by the backend.")
     st.markdown("THIS PAGE IS IN BETA AND SUBJECT TO CHANGE.")
-    
-    # Check if request is already in progress
-    if st.session_state.api_request_in_progress:
-        st.info("Data request in progress... Please wait.")
-        with st.spinner("This may take a few minutes as the backend processes market data..."):
-            # Add a small delay to prevent too frequent reruns
-            import time
-            time.sleep(2)
-            # Try to get data from cache
-            data = fetch_market_recommendations()
-            # If we got data, clear the in-progress flag
-            if data is not None and not isinstance(data, dict) or not data.get("error"):
-                st.session_state.api_request_in_progress = False
-            else:
-                st.rerun()  # Rerun to check if data is ready
-    else:
-        # Try to get data from cache without starting a new request
-        data = fetch_market_recommendations()
-        
-        # If no data in cache and no request in progress, start a new request
-        if data is None and not st.session_state.api_request_in_progress:
-            st.session_state.api_request_in_progress = True
-            st.info("Requesting data from backend. This may take a few minutes...")
-            # This will trigger the API call
+
+    # --- Fetch Data Once ---
+    data = fetch_market_recommendations_cached()
+
+    # --- Handle Different Data States ---
+    if isinstance(data, dict) and data.get("result") == "processing":
+        st.info(f"Backend is processing the market data. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds...")
+        with st.spinner("Please wait..."):
+            time.sleep(RETRY_DELAY_SECONDS)
+        st.rerun()
+
+    elif isinstance(data, dict) and "error" in data:
+        st.error(f"Failed to fetch market recommendations: {data['error']}")
+        if st.button("Retry Fetch"):
+            st.cache_data.clear() # Clear cache before retrying
             st.rerun()
-    
-    # Check for errors
-    if isinstance(data, dict) and "error" in data:
-        st.error(data["error"])
-        if st.button("Retry"):
-            st.session_state.api_request_in_progress = False
-            st.cache_data.clear()
-            st.rerun()
-        return
-    
-    if data and isinstance(data, list):
+        return # Stop execution if there's an error
+
+    elif data is None:
+         # This might happen on the very first load if fetch_api_data returns None immediately on miss
+         st.info(f"Requesting data from backend. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds...")
+         with st.spinner("Please wait..."):
+             time.sleep(RETRY_DELAY_SECONDS)
+         st.rerun()
+
+    elif isinstance(data, list):
+        # --- Data successfully fetched, display it ---
+        st.success("Market data loaded successfully.")
         st.subheader(f"Analysis Results ({len(data)} tokens)")
 
-        # Count recommendations
+        # Count recommendations with updated names
         list_count = sum(1 for item in data if item.get('recommendation') == 'List')
         increase_leverage_count = sum(1 for item in data if item.get('recommendation') == 'Increase Leverage')
         decrease_leverage_count = sum(1 for item in data if item.get('recommendation') == 'Decrease Leverage')
         delist_count = sum(1 for item in data if item.get('recommendation') == 'Delist')
-        no_action_count = sum(1 for item in data if item.get('recommendation') == 'No Action')
+        maintain_leverage_count = sum(1 for item in data if item.get('recommendation') == 'Maintain Leverage')
+        keep_unlisted_count = sum(1 for item in data if item.get('recommendation') == 'Keep Unlisted')
 
-        # Display Summary Metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # Display Summary Metrics with updated names
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
             st.metric("Recommend List", list_count, delta_color="off")
         with col2:
             st.metric("Increase Leverage", increase_leverage_count, delta_color="off")
         with col3:
-            st.metric("No Action", no_action_count, delta_color="off")
+             st.metric("Maintain Leverage", maintain_leverage_count, delta_color="off")
         with col4:
             st.metric("Decrease Leverage", decrease_leverage_count, delta_color="off")
         with col5:
             st.metric("Recommend Delist", delist_count, delta_color="off")
+        with col6:
+             st.metric("Keep Unlisted", keep_unlisted_count, delta_color="off")
 
         try:
-            # Convert list of dictionaries to DataFrame
+            # Convert list of dictionaries to DataFrame (original data from API)
             df = pd.DataFrame(data)
-            
-            # Create checkbox for filtering to only show listed tokens
+
+            # Create checkbox for filtering *before* processing data for display
             show_only_listed = st.checkbox("Show only tokens listed on Drift", value=False)
-            
-            if show_only_listed:
-                # Check if drift_data and drift_is_listed_perp are available
-                if 'drift_data' in df.columns:
-                    listed_tokens = []
-                    for idx, row in df.iterrows():
-                        drift_data = row.get('drift_data', {})
-                        if isinstance(drift_data, dict) and drift_data.get('drift_is_listed_perp') == 'true':
-                            listed_tokens.append(idx)
-                    df = df.loc[listed_tokens]
-                    st.write(f"Showing {len(df)} tokens currently listed on Drift")
-                else:
-                    st.warning("Unable to filter by listed status - missing data")
-            
-            # Extract key fields and create a display DataFrame
+
+            # Create a DataFrame for display purposes
             display_df = pd.DataFrame()
-            
-            # First try to extract key fields directly
-            try:
-                display_df['Symbol'] = df['symbol']
-            except (KeyError, TypeError):
-                display_df['Symbol'] = [item.get('symbol', 'Unknown') for item in data]
-            
-            # Extract metrics or set defaults if not found
-            try:
-                display_df['Total Score'] = df['total_score']
-            except (KeyError, TypeError):
-                display_df['Total Score'] = [item.get('total_score', 0) for item in data]
-                
-            try:
-                display_df['Recommendation'] = df['recommendation']
-            except (KeyError, TypeError):
-                display_df['Recommendation'] = [item.get('recommendation', 'Unknown') for item in data]
-                
-            # Extract metrics from nested structures if available
-            display_df['Market Cap'] = 0.0  # Use float instead of int
-            display_df['24h Volume'] = 0.0  # Use float instead of int
-            display_df['Drift OI'] = 0.0  # Use float instead of int
-            display_df['Max Leverage'] = 0.0  # Use float instead of int
-            display_df['Drift Volume (30d)'] = 0.0  # Use float instead of int
-            
+
+            # --- Populate display_df ---
+            # Ensure Symbol exists and is explicitly string type
+            if 'symbol' in df.columns:
+                display_df['Symbol'] = df['symbol'].astype(str)
+            else:
+                display_df['Symbol'] = [str(item.get('symbol', 'Unknown')) for item in data]
+
+            # Initialize all expected columns in display_df
+            metric_cols_init = {
+                'Total Score': 0.0, 'Recommendation': 'Unknown', 'Market Cap': 0.0, '30d Volume': 0.0, '24h Volume': 0.0,
+                'Drift OI': 0.0, 'Max Leverage': 0.0, 'Drift Volume (30d)': 0.0,
+                'Drift Volume Score': 0.0, 'OI Score': 0.0, 'Global Volume Score': 0.0, 'FDV Score': 0.0
+            }
+            for col, default_val in metric_cols_init.items():
+                 display_df[col] = default_val
+
+
+            # Populate display_df using original df index (idx)
+            # This ensures correct alignment before filtering or setting index
             for idx, row in df.iterrows():
-                # Extract from coingecko_data if available
+                # Direct fields from the root level of API response items
+                display_df.at[idx, 'Total Score'] = float(row.get('total_score', 0))
+                display_df.at[idx, 'Recommendation'] = str(row.get('recommendation', 'Unknown'))
+                display_df.at[idx, 'Drift Volume Score'] = float(row.get('drift_volume_score', 0))
+                display_df.at[idx, 'OI Score'] = float(row.get('open_interest_score', 0))
+                display_df.at[idx, 'Global Volume Score'] = float(row.get('global_volume_score', 0))
+                display_df.at[idx, 'FDV Score'] = float(row.get('fdv_score', 0))
+
+                # Nested: coingecko_data
                 coingecko_data = row.get('coingecko_data', {})
                 if isinstance(coingecko_data, dict):
-                    display_df.at[idx, 'Market Cap'] = float(coingecko_data.get('coingecko_market_cap', 0))
+                    fdv = coingecko_data.get('coingecko_fully_diluted_valuation')
+                    mc = coingecko_data.get('coingecko_market_cap', 0)
+                    # Prioritize FDV, fallback to MC if FDV is None or 0
+                    display_df.at[idx, 'Market Cap'] = float(fdv if fdv is not None and fdv > 0 else mc)
+                    display_df.at[idx, '30d Volume'] = float(coingecko_data.get('coingecko_30d_volume', 0))
                     display_df.at[idx, '24h Volume'] = float(coingecko_data.get('coingecko_total_volume_24h', 0))
-                
-                # Extract from drift_data if available
+
+                # Nested: drift_data
                 drift_data = row.get('drift_data', {})
                 if isinstance(drift_data, dict):
                     display_df.at[idx, 'Drift OI'] = float(drift_data.get('drift_open_interest', 0))
                     display_df.at[idx, 'Max Leverage'] = float(drift_data.get('drift_max_leverage', 0))
                     display_df.at[idx, 'Drift Volume (30d)'] = float(drift_data.get('drift_total_quote_volume_30d', 0))
-            
-            # Extract raw metrics if available for backup
-            for idx, row in df.iterrows():
-                raw_metrics = row.get('raw_metrics', {})
-                if isinstance(raw_metrics, dict):
-                    if display_df.at[idx, 'Market Cap'] == 0:
-                        display_df.at[idx, 'Market Cap'] = float(raw_metrics.get('fdv', 0))
-                    if display_df.at[idx, '24h Volume'] == 0:
-                        display_df.at[idx, '24h Volume'] = float(raw_metrics.get('global_daily_volume', 0))
-                    if display_df.at[idx, 'Drift OI'] == 0:
-                        display_df.at[idx, 'Drift OI'] = float(raw_metrics.get('drift_open_interest', 0))
-            
+
+                # Nested: raw_metrics (Consider removing if direct extraction is reliable)
+                # raw_metrics = row.get('raw_metrics', {})
+                # if isinstance(raw_metrics, dict):
+                    # # Backup logic examples:
+                    # if pd.isna(display_df.at[idx, 'Market Cap']) or display_df.at[idx, 'Market Cap'] == 0:
+                    #     display_df.at[idx, 'Market Cap'] = float(raw_metrics.get('fdv', 0))
+                    # if pd.isna(display_df.at[idx, 'Drift OI']) or display_df.at[idx, 'Drift OI'] == 0:
+                    #     display_df.at[idx, 'Drift OI'] = float(raw_metrics.get('drift_open_interest', 0))
+
+
+            # --- Filter BEFORE setting index ---
+            if show_only_listed:
+                # Determine original indices to keep based on drift_data in the *original* df
+                indices_to_keep = []
+                for idx, row in df.iterrows():
+                    drift_data = row.get('drift_data', {})
+                    # Check if 'drift_is_listed_perp' is explicitly 'true' (as string from backend)
+                    if isinstance(drift_data, dict) and drift_data.get('drift_is_listed_perp') == 'true':
+                        indices_to_keep.append(idx)
+
+                # Filter the display_df using the determined indices
+                if indices_to_keep:
+                    display_df = display_df.loc[indices_to_keep].copy() # Use .copy() to avoid SettingWithCopyWarning
+                else:
+                    display_df = pd.DataFrame(columns=display_df.columns) # Empty DF if no listed tokens
+                st.write(f"Showing {len(display_df)} tokens currently listed on Drift Perps")
+
+
+            # --- Final Preparations for Display ---
             # Sort by Total Score descending
             display_df = display_df.sort_values(by='Total Score', ascending=False)
-            
-            # Calculate component scores
-            try:
-                display_df['Drift Volume Score'] = df['drift_volume_score']
-                display_df['OI Score'] = df['open_interest_score']
-                display_df['Global Volume Score'] = df['global_volume_score']
-                display_df['FDV Score'] = df['fdv_score']
-            except (KeyError, TypeError):
-                # Fallback to extracting from the item list
-                display_df['Drift Volume Score'] = [item.get('drift_volume_score', 0) for item in data]
-                display_df['OI Score'] = [item.get('open_interest_score', 0) for item in data]
-                display_df['Global Volume Score'] = [item.get('global_volume_score', 0) for item in data]
-                display_df['FDV Score'] = [item.get('fdv_score', 0) for item in data]
-            
-            # Set index to Symbol for display
+
+            # Set index to Symbol for display *after* all data is populated and filtered
+            # This is where the PyArrow error occurred if 'Symbol' wasn't string
             display_df = display_df.set_index('Symbol')
-            
+
             # Define formatters for each column
             formatters = {
                 'Market Cap': format_large_number,
-                '24h Volume': format_large_number,
+                '30d Volume': format_large_number,
+                '24h Volume': format_large_number, # Ensure 24h formatter is included
                 'Drift OI': format_large_number,
                 'Drift Volume (30d)': format_large_number,
-                'Max Leverage': lambda x: f"{int(x)}x" if pd.notna(x) and x > 0 else "Not Listed",
+                'Max Leverage': lambda x: f"{int(x)}x" if pd.notna(x) and x > 0 else "N/A",
                 'Total Score': "{:.2f}",
                 'Drift Volume Score': "{:.2f}",
                 'OI Score': "{:.2f}",
                 'Global Volume Score': "{:.2f}",
                 'FDV Score': "{:.2f}"
             }
-            
-            # Apply formatting
-            st.subheader("Market Recommendations")
-            df_styled = display_df.style.format(formatters, na_rep="N/A")
-            df_styled = df_styled.apply(lambda x: x.map(style_recommendation), subset=['Recommendation'])
-            
-            # Display the main table with score and recommendation
+
+            # --- Display Tables ---
+            # Main Summary Table
+            st.subheader("Market Recommendations Summary")
+            summary_cols = ['Recommendation', 'Total Score', 'Max Leverage', 'Drift Volume (30d)', 'Drift OI', '30d Volume', 'Market Cap']
+            # Ensure columns exist before selecting
+            summary_cols_exist = [col for col in summary_cols if col in display_df.columns]
+            main_display_df = display_df[summary_cols_exist]
+            df_styled = main_display_df.style.format(formatters, na_rep="N/A")
+            if 'Recommendation' in df_styled.columns:
+                df_styled = df_styled.apply(lambda x: x.map(style_recommendation), subset=['Recommendation'], axis=0) # Apply to column
             st.dataframe(df_styled, use_container_width=True)
-            
-            # Expander for detailed view
-            with st.expander("View Detailed Metrics"):
-                # Show all numeric columns with formatting
-                detail_cols = ['Market Cap', '24h Volume', 'Drift OI', 'Drift Volume (30d)', 
-                               'Max Leverage', 'Total Score', 
-                               'Drift Volume Score', 'OI Score', 'Global Volume Score', 'FDV Score']
-                detail_df = display_df[detail_cols]
+
+            # Detailed View Expander
+            with st.expander("View Detailed Metrics & Scores"):
+                detail_cols = ['Recommendation', 'Total Score', 'Drift Volume Score', 'OI Score', 'Global Volume Score', 'FDV Score',
+                               'Max Leverage', 'Drift Volume (30d)', 'Drift OI', '30d Volume', '24h Volume', 'Market Cap']
+                # Ensure columns exist before selecting
+                detail_cols_exist = [col for col in detail_cols if col in display_df.columns]
+                detail_df = display_df[detail_cols_exist]
                 detail_styled = detail_df.style.format(formatters, na_rep="N/A")
+                if 'Recommendation' in detail_styled.columns:
+                     detail_styled = detail_styled.apply(lambda x: x.map(style_recommendation), subset=['Recommendation'], axis=0) # Apply to column
                 st.dataframe(detail_styled, use_container_width=True)
-                
+
             # Raw data expander for debugging
             with st.expander("Raw Data (for debugging)"):
-                # Get the first item as a sample
+                # Get the first item as a sample from the original data list
                 if data:
                     st.json(data[0])
-        
+
         except Exception as e:
-            st.error(f"Error processing data: {e}")
-            st.write("Raw data received from API:")
+            st.error(f"Error processing or displaying data: {e}")
+            import traceback
+            st.error(f"Traceback: {traceback.format_exc()}") # More detailed error for debugging
+            st.write("Original data received from API (first 5 items):")
             st.write(data[:5])  # Show first 5 items
 
-    elif data:
-        # Handle API error or unexpected format
-        st.error("Received data in unexpected format. Here's what was returned:")
+    else: # Handles cases where data is not None, not a list, not processing, and not an error dict
+        # Handle API returning unexpected format
+        st.error("Received data in an unexpected format from the backend or cache. Here's what was returned:")
         st.write(data)
-    else:
-        # Handle connection error
-        st.warning("Could not retrieve data from the backend. Please ensure it's running and accessible.")
+        if st.button("Clear Cache and Retry"):
+             st.cache_data.clear()
+             st.rerun()
+
 
     st.markdown("---")
 
-    # Methodology Section
+    # Methodology Section - Updated with new recommendation names
     st.markdown(
         """
         ### 📊 Methodology
@@ -312,79 +334,78 @@ def market_recommender_page():
 
         **Scoring Components (Total 100 Points):**
 
-        1. **Drift Volume Score (0-25 points)**
-           * Based on 30-day trading volume on Drift
-           * Higher volume indicates more trader interest and protocol revenue
-           * Score tiers: $500M+ (25pts), $100M-$499M (20pts), $25M-$99M (15pts), $1M-$24M (10pts), $100K-$999K (5pts), <$100K (0pts)
+        1.  **Drift Volume Score (0-25 points)**
+            * Based on 30-day trading volume on Drift (Perp & Spot combined)
+            * Higher volume indicates more trader interest and potential protocol revenue
+            * Score tiers: $500M+ (25pts), $100M-$499M (20pts), $25M-$99M (15pts), $1M-$24M (10pts), $100K-$999K (5pts), <$100K (0pts)
 
-        2. **Open Interest Score (0-25 points)**
-           * Based on current open interest on Drift perpetual markets
-           * Higher OI indicates more capital committed to positions
-           * Score tiers: $5M+ (25pts), $1M-$4.9M (20pts), $250K-$999K (15pts), $50K-$249K (10pts), $5K-$49K (5pts), <$5K (0pts)
+        2.  **Open Interest Score (0-25 points)**
+            * Based on current open interest on Drift perpetual markets
+            * Higher OI indicates more capital committed to positions
+            * Score tiers: $5M+ (25pts), $1M-$4.9M (20pts), $250K-$999K (15pts), $50K-$249K (10pts), $5K-$49K (5pts), <$5K (0pts)
 
-        3. **Global Volume Score (0-40 points)**
-           * Based on 24-hour global trading volume across all exchanges
-           * Higher global volume indicates broader market interest and liquidity
-           * Score tiers: $500M+ (40pts), $250M-$499M (30pts), $100M-$249M (20pts), $25M-$99M (10pts), $5M-$24M (5pts), <$5M (0pts)
+        3.  **Global Volume Score (0-40 points)**
+            * Based on 30-day global trading volume across all exchanges (Source: CoinGecko)
+            * Higher global volume indicates broader market interest and liquidity
+            * Score tiers: $15B+ (40pts), $7.5B-$14.9B (30pts), $3B-$7.49B (20pts), $750M-$2.9B (10pts), $150M-$749M (5pts), <$150M (0pts) (*Note: Tiers adjusted based on backend calculation*)
 
-        4. **FDV Score (0-10 points)**
-           * Based on Fully Diluted Valuation (or Market Cap if FDV unavailable)
-           * Higher market cap indicates larger, more established projects
-           * Score tiers: $10B+ (10pts), $1B-$9.9B (8pts), $500M-$999M (6pts), $100M-$499M (2pts), <$100M (0pts)
+        4.  **FDV Score (0-10 points)**
+            * Based on Fully Diluted Valuation (or Market Cap if FDV unavailable)
+            * Higher market cap/FDV generally indicates larger, more established projects
+            * Score tiers: $10B+ (10pts), $1B-$9.9B (8pts), $500M-$999M (6pts), $100M-$499M (2pts), <$100M (0pts)
 
         **Recommendation Logic:**
 
-        The total score (0-100) is compared against thresholds that vary based on the current maximum leverage:
+        The total score (0-100) is compared against thresholds that vary based on the current maximum leverage offered for the **perpetual market**:
 
-        * For **unlisted markets**:
-          * Score ≥ 45: **List**
-          * Score < 45: **Do Nothing**
+        * For **unlisted markets** (Max Leverage = N/A or 0):
+            * Score ≥ 45: **List** (Consider listing with initial leverage, e.g., 2x)
+            * Score < 45: **Keep Unlisted** (Market doesn't meet minimum criteria)
 
-        * For **listed markets** with leverage = 2x:
-          * Score ≤ 40: **Delist**
-          * Score > 40: **No Action**
+        * For **listed markets** with Max Leverage = 2x:
+            * Score ≤ 40: **Delist** (Market performance is below minimum threshold for listing)
+            * Score > 40: **Maintain Leverage** (Score doesn't justify delisting or increase yet)
 
-        * For **listed markets** with leverage = 4x:
-          * Score ≥ 75: **Increase Leverage**
-          * Score ≤ 50: **Decrease Leverage**
-          * 50 < Score < 75: **No Action**
+        * For **listed markets** with Max Leverage = 4x:
+            * Score ≥ 75: **Increase Leverage** (Consider increasing to 5x)
+            * Score ≤ 50: **Decrease Leverage** (Consider decreasing to 2x)
+            * 50 < Score < 75: **Maintain Leverage**
 
-        * For **listed markets** with leverage = 5x:
-          * Score ≥ 80: **Increase Leverage**
-          * Score ≤ 60: **Decrease Leverage**
-          * 60 < Score < 80: **No Action**
+        * For **listed markets** with Max Leverage = 5x:
+            * Score ≥ 80: **Increase Leverage** (Consider increasing to 10x)
+            * Score ≤ 60: **Decrease Leverage** (Consider decreasing to 4x)
+            * 60 < Score < 80: **Maintain Leverage**
 
-        * For **listed markets** with leverage = 10x:
-          * Score ≥ 90: **Increase Leverage**
-          * Score ≤ 70: **Decrease Leverage**
-          * 70 < Score < 90: **No Action**
+        * For **listed markets** with Max Leverage = 10x:
+            * Score ≥ 90: **Increase Leverage** (Consider increasing to 20x)
+            * Score ≤ 70: **Decrease Leverage** (Consider decreasing to 5x)
+            * 70 < Score < 90: **Maintain Leverage**
 
-        * For **listed markets** with leverage = 20x:
-          * Score ≤ 75: **Decrease Leverage**
-          * Score > 75: **No Action**
+        * For **listed markets** with Max Leverage = 20x:
+            * Score ≤ 75: **Decrease Leverage** (Consider decreasing to 10x)
+            * Score > 75: **Maintain Leverage** (Already at max leverage or score justifies it)
 
         **Data Sources:**
 
-        * **Drift Protocol**: Drift OI, trading volume, leverage data
-        * **CoinGecko**: Market cap, global trading volume, and other token metrics
-        
+        * **Drift Protocol (via `driftpy` & API)**: Drift OI, trading volume (30d), funding rates, oracle prices, max leverage
+        * **CoinGecko**: Market cap, FDV, global trading volume (30d & 24h), token info
+
         **Important Notes:**
 
-        * Recommendations are based solely on quantitative metrics and should be supplemented with qualitative analysis
-        * Market conditions can change rapidly, so recommendations should be reviewed regularly
-        * New or smaller markets may have limited data, which can affect scoring accuracy
+        * Recommendations are based solely on quantitative metrics and should be supplemented with qualitative analysis (e.g., project fundamentals, security audits, community interest).
+        * Market conditions can change rapidly; recommendations should be reviewed regularly.
+        * The scoring model and thresholds are subject to refinement.
         """
     )
 
     st.markdown("---")
-    st.caption("Data is cached for 10 minutes. Click Refresh to fetch the latest data from the backend.")
+    st.caption("Data is cached for 60 seconds. Refreshing the page will check for new data from the backend or cache.")
 
     # Add a button to force refresh (clear cache and restart request)
-    if st.button("Refresh Data"):
-        st.session_state.api_request_in_progress = False
+    if st.button("Force Refresh Data"):
         st.cache_data.clear()
         st.rerun()
 
-# Remove the direct execution
+# Remove the direct execution check as this is intended to be run via streamlit run app.py
 # if __name__ == "__main__":
-#     market_recommender_page() 
+#      market_recommender_page()

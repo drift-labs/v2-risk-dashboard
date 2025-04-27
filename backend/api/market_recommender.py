@@ -9,10 +9,18 @@ from backend.state import BackendRequest
 import os
 from datetime import datetime, timedelta
 
-# Constants
+# --- Constants ---
 PRICE_PRECISION = 1e6  # Add price precision constant
 MARKET_BASE_DECIMALS = {
     0: 9,  # Default to 9 decimals if not specified
+}
+
+# Symbols to ignore
+IGNORE_SYMBOLS = ['USDT', 'USDC']
+
+# Symbol conversions
+SYMBOL_CONVERSIONS = {
+    'TRX': 'TRON',
 }
 
 # Configure logging
@@ -308,7 +316,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
     
     Args:
         discovered_markets (Dict): Dictionary of markets discovered from fetch_driftpy_data
-                                Contains market structure with perp and spot listings
+                                   Contains market structure with perp and spot listings
     
     Returns:
         Dict: Dictionary containing Drift API data for each coin with nested market data
@@ -396,8 +404,8 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         # Convert dates to Unix timestamps (seconds)
         # NOTE: For the Drift API, startTs should be the more recent timestamp (end_date)
         # and endTs should be the older timestamp (start_date), which is counter-intuitive
-        end_ts = int(start_date.timestamp())    # Earlier date - goes in endTs
-        start_ts = int(end_date.timestamp())    # Later date - goes in startTs
+        end_ts = int(start_date.timestamp())     # Earlier date - goes in endTs
+        start_ts = int(end_date.timestamp())     # Later date - goes in startTs
         
         # Calculate number of days to request (plus 1 to include both start and end)
         days = (end_date - start_date).days + 1
@@ -597,15 +605,15 @@ def calculate_global_volume_score(daily_volume: float) -> float:
         float: Global volume score between 0 and 40
     """
     # Score based on global volume tiers according to the scoring breakdown
-    if daily_volume >= 500_000_000:  # $500M+
+    if daily_volume >= 15_000_000_000:  # $500M+
         return 40.0
-    elif daily_volume >= 250_000_000:  # $250M - $499M
+    elif daily_volume >= 7_500_000_000:  # $250M - $499M
         return 30.0
-    elif daily_volume >= 100_000_000:  # $100M - $249M
+    elif daily_volume >= 3_000_000_000:  # $100M - $249M
         return 20.0
-    elif daily_volume >= 25_000_000:  # $25M - $99M
+    elif daily_volume >= 750_000_000:  # $25M - $99M
         return 10.0
-    elif daily_volume >= 5_000_000:  # $5M - $24M
+    elif daily_volume >= 150_000_000:  # $5M - $24M
         return 5.0
     else:  # < $5M
         return 0.0
@@ -641,49 +649,65 @@ def get_market_recommendation(total_score: float, current_leverage: float) -> st
         current_leverage (float): Current maximum leverage offered
         
     Returns:
-        str: Recommendation (List, Increase Leverage, Decrease Leverage, Delist, or No Action)
+        str: Recommendation (List, Increase Leverage, Decrease Leverage, Delist, Keep Unlisted, or Maintain Leverage)
     """
     # Define upper and lower bound thresholds for different leverage levels
     SCORE_UB = {
-        0: 45,   # Unlisted
-        2: float('inf'),  # No upper bound for 2x (cannot increase further)
-        4: 75,
-        5: 80,
-        10: 90,
-        20: 95
+        0: 45,    # Threshold to list (if score >= 45)
+        2: float('inf'),  # No upper bound for 2x (cannot increase further via this logic)
+        4: 75,    # Threshold to increase from 4x (if score >= 75)
+        5: 80,    # Threshold to increase from 5x (if score >= 80)
+        10: 90,   # Threshold to increase from 10x (if score >= 90)
+        20: 95    # Threshold to increase from 20x (if score >= 95) - Usually max
     }
     
     SCORE_LB = {
-        0: 0,    # Not applicable for unlisted
-        2: 40,   # Delist threshold for 2x
-        4: 50,
-        5: 60,
-        10: 70,
-        20: 75
+        0: 0,     # Not applicable for unlisted
+        2: 40,    # Delist threshold for 2x (if score <= 40)
+        4: 50,    # Threshold to decrease from 4x (if score <= 50)
+        5: 60,    # Threshold to decrease from 5x (if score <= 60)
+        10: 70,   # Threshold to decrease from 10x (if score <= 70)
+        20: 75    # Threshold to decrease from 20x (if score <= 75)
     }
     
-    # Find the closest leverage level for thresholds
+    # Find the closest applicable leverage level for thresholds
+    # This logic primarily finds the *current* leverage level within the defined thresholds
     leverage_levels = sorted(SCORE_UB.keys())
-    closest_leverage = leverage_levels[0]
+    closest_leverage = leverage_levels[0] # Default to 0 (unlisted)
     
     for level in leverage_levels:
         if level <= current_leverage:
             closest_leverage = level
     
     # Apply decision logic
-    if current_leverage == 0:  # Unlisted
+    if current_leverage == 0:  # Unlisted market
         if total_score >= SCORE_UB[0]:
             return "List"
         else:
-            return "Do Nothing"
-    elif current_leverage == 2 and total_score <= SCORE_LB[2]:
-        return "Delist"
-    elif total_score >= SCORE_UB.get(closest_leverage, float('inf')):
-        return "Increase Leverage"
-    elif total_score <= SCORE_LB.get(closest_leverage, 0) and closest_leverage > 2:
-        return "Decrease Leverage"
-    else:
-        return "No Action"
+            return "Keep Unlisted" # Score is too low to list
+            
+    elif current_leverage == 2: # Currently listed at 2x leverage
+        if total_score <= SCORE_LB[2]:
+            return "Delist"
+        # Note: Increase leverage from 2x might require manual review or different logic
+        # This logic currently doesn't recommend increasing from 2x
+        else:
+            return "Maintain Leverage" 
+            
+    else: # Listed market with leverage > 2x
+        # Check if score is high enough to increase leverage (only if current leverage is not max)
+        if current_leverage < 20 and total_score >= SCORE_UB.get(closest_leverage, float('inf')):
+             return "Increase Leverage"
+        # Check if score is low enough to decrease leverage
+        elif total_score <= SCORE_LB.get(closest_leverage, 0):
+             # Ensure we don't decrease below 2x (handled by Delist logic for 2x)
+             if closest_leverage > 2: 
+                  return "Decrease Leverage"
+             else: # If logic somehow reaches here for 2x, delist check already happened
+                  return "Maintain Leverage" 
+        # Score is within the bounds for the current leverage level
+        else:
+             return "Maintain Leverage"
 
 def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
     """
@@ -707,15 +731,20 @@ def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
         # Get raw metrics
         drift_volume_30d = market_info.get('drift_total_quote_volume_30d', 0.0)
         drift_open_interest = market_info.get('drift_open_interest', 0.0)
-        global_daily_volume = asset.get('coingecko_data', {}).get('coingecko_total_volume_24h', 0.0)
+        global_30d_volume = asset.get('coingecko_data', {}).get('coingecko_30d_volume', 0.0)
+        global_24h_volume = asset.get('coingecko_data', {}).get('coingecko_total_volume_24h', 0.0)
         fdv = asset.get('coingecko_data', {}).get('coingecko_fully_diluted_valuation', 0.0)
+        # Handle case where FDV is None or 0, fall back to market cap
+        if not fdv or fdv == 0:
+            fdv = asset.get('coingecko_data', {}).get('coingecko_market_cap', 0.0)
+            
         current_leverage = market_info.get('drift_max_leverage', 0.0)
         
         # Calculate component scores
         drift_volume_score = calculate_drift_volume_score(drift_volume_30d)
         open_interest_score = calculate_open_interest_score(drift_open_interest)
-        global_volume_score = calculate_global_volume_score(global_daily_volume)
-        fdv_score = calculate_fdv_score(fdv)
+        global_volume_score = calculate_global_volume_score(global_30d_volume) # Use 30d volume for scoring
+        fdv_score = calculate_fdv_score(fdv or 0.0) # Ensure fdv is not None
         
         # Calculate total score
         total_score = drift_volume_score + open_interest_score + global_volume_score + fdv_score
@@ -735,7 +764,8 @@ def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
             'raw_metrics': {
                 'drift_volume_30d': drift_volume_30d,
                 'drift_open_interest': drift_open_interest,
-                'global_daily_volume': global_daily_volume,
+                'coingecko_30d_volume': global_30d_volume,
+                'coingecko_total_volume_24h': global_24h_volume, # Keep 24h for info
                 'fdv': fdv,
                 'current_max_leverage': current_leverage
             }
@@ -757,6 +787,11 @@ def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
         else:
             scored_asset['drift_data'] = drift_data[symbol]
         
+        # Ensure both 24h and 30d volumes are present in the response coingecko_data
+        if 'coingecko_data' in scored_asset:
+            scored_asset['coingecko_data']['coingecko_30d_volume'] = global_30d_volume
+            scored_asset['coingecko_data']['coingecko_total_volume_24h'] = global_24h_volume
+        
         scored_assets.append(scored_asset)
     
     # Sort assets by total score in descending order
@@ -767,25 +802,23 @@ def score_assets(assets: List[Dict], drift_data: Dict) -> List[Dict]:
 def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
     """
     Process Drift markets data and update drift_data dictionary with the new nested structure.
+    This function primarily reformats and aggregates volumes already fetched.
     
     Args:
-        scored_data (List[Dict]): List of dictionaries containing scored market data
+        scored_data (List[Dict]): List of dictionaries containing scored market data (unused in current logic but kept for potential future use)
         drift_data (Dict): Dictionary containing Drift market data with nested perp and spot markets
         
     Returns:
-        Dict: Updated drift_data dictionary
+        Dict: Updated drift_data dictionary ready for integration
     """
     processed_drift_data = {}
     
-    for asset in scored_data:
-        symbol = asset.get('symbol', '')
+    # Iterate through the symbols present in the original drift_data
+    for symbol, symbol_drift_data in drift_data.items():
         if not symbol:
             continue
             
-        # Get drift data for this symbol if it exists
-        symbol_drift_data = drift_data.get(symbol, {})
-        
-        # Initialize default structure
+        # Initialize default structure for the symbol
         processed_drift_data[symbol] = {
             "drift_is_listed_perp": symbol_drift_data.get('drift_is_listed_perp', 'false'),
             "drift_is_listed_spot": symbol_drift_data.get('drift_is_listed_spot', 'false'),
@@ -798,34 +831,40 @@ def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
             "drift_funding_rate_1h": symbol_drift_data.get('drift_funding_rate_1h', 0.0)
         }
         
-        # Calculate total volumes across all markets
+        # Calculate total volumes by summing across all markets for the symbol
         total_quote_volume = 0.0
         total_base_volume = 0.0
         
-        # Clean up perp markets and sum volumes
-        for market_name, market_data in list(processed_drift_data[symbol]["drift_perp_markets"].items()):
-            # Remove redundant volume field
-            if "drift_perp_volume_30d" in market_data:
-                del market_data["drift_perp_volume_30d"]
-                
-            # Sum quote and base volumes    
+        # Sum volumes from perp markets
+        for market_name, market_data in processed_drift_data[symbol].get("drift_perp_markets", {}).items():
             total_quote_volume += market_data.get("drift_perp_quote_volume_30d", 0.0)
             total_base_volume += market_data.get("drift_perp_base_volume_30d", 0.0)
-            
-        # Clean up spot markets and sum volumes
-        for market_name, market_data in list(processed_drift_data[symbol]["drift_spot_markets"].items()):
-            # Remove redundant volume field
+            # Clean up redundant/old fields if they exist
+            if "drift_perp_volume_30d" in market_data:
+                del market_data["drift_perp_volume_30d"]
+            if "drift_perp_oi" in market_data: # Example OI was added here earlier, remove if final OI is at symbol level
+                 del market_data["drift_perp_oi"]
+
+        # Sum volumes from spot markets
+        for market_name, market_data in processed_drift_data[symbol].get("drift_spot_markets", {}).items():
+            total_quote_volume += market_data.get("drift_spot_quote_volume_30d", 0.0)
+            total_base_volume += market_data.get("drift_spot_base_volume_30d", 0.0)
+             # Clean up redundant/old fields if they exist
             if "drift_spot_volume_30d" in market_data:
                 del market_data["drift_spot_volume_30d"]
                 
-            # Sum quote and base volumes
-            total_quote_volume += market_data.get("drift_spot_quote_volume_30d", 0.0)
-            total_base_volume += market_data.get("drift_spot_base_volume_30d", 0.0)
-            
-        # Update total volumes
+        # Update total volumes at the symbol level
         processed_drift_data[symbol]["drift_total_quote_volume_30d"] = total_quote_volume
         processed_drift_data[symbol]["drift_total_base_volume_30d"] = total_base_volume
-    
+        
+        # Ensure OI and funding rate are correctly placed (usually associated with perps)
+        # If no perps listed, these should likely be 0 or handled appropriately
+        if processed_drift_data[symbol]["drift_is_listed_perp"] == 'false':
+             processed_drift_data[symbol]["drift_open_interest"] = 0.0
+             processed_drift_data[symbol]["drift_funding_rate_1h"] = 0.0
+             processed_drift_data[symbol]["drift_max_leverage"] = 0.0 # Max leverage applies to perps
+
+
     return processed_drift_data
 
 def main(vat: Vat, number_of_tokens: int = 2) -> List[Dict]:
@@ -853,72 +892,53 @@ def main(vat: Vat, number_of_tokens: int = 2) -> List[Dict]:
         processed_symbols = {asset["symbol"].upper() for asset in coingecko_data}
         logger.info(f"Processing {len(processed_symbols)} symbols from CoinGecko: {', '.join(processed_symbols)}")
         
-        # Fetch DriftPy data for market discovery
-        drift_data = fetch_driftpy_data(vat)
+        # Fetch DriftPy data for market discovery (OI, leverage, funding, prices)
+        driftpy_discovered_data = fetch_driftpy_data(vat)
         
         # Filter drift_data to only include symbols we got from CoinGecko
-        filtered_drift_data = {
-            symbol: data for symbol, data in drift_data.items()
+        filtered_driftpy_data = {
+            symbol: data for symbol, data in driftpy_discovered_data.items()
             if symbol in processed_symbols
         }
-        logger.info(f"Filtered Drift markets to {len(filtered_drift_data)} matching symbols")
+        logger.info(f"Filtered Drift markets from Vat to {len(filtered_driftpy_data)} matching symbols")
         
-        # Fetch Drift API data using the discovered and filtered markets
-        drift_api_data = fetch_drift_data_api_data(filtered_drift_data)
+        # Fetch Drift API data (primarily for volumes) using the discovered and filtered markets
+        drift_api_data = fetch_drift_data_api_data(filtered_driftpy_data)
         
-        # Merge drift_api_data volumes into drift_data
+        # Merge drift_api_data volumes into driftpy_discovered_data structure
+        # This combined structure will hold the most complete Drift-specific info
+        combined_drift_data = filtered_driftpy_data.copy() # Start with Vat data (OI, leverage etc)
+
         for symbol, api_market_data in drift_api_data.items():
-            if symbol in drift_data:
+            if symbol in combined_drift_data:
                 # Update perp market volumes
-                for market_name, perp_data in api_market_data.get('drift_perp_markets', {}).items():
-                    if market_name in drift_data[symbol].get('drift_perp_markets', {}):
-                        # Update with both quote and base volumes
-                        if "drift_perp_quote_volume_30d" in perp_data:
-                            drift_data[symbol]['drift_perp_markets'][market_name]['drift_perp_quote_volume_30d'] = perp_data.get('drift_perp_quote_volume_30d', 0.0)
-                        if "drift_perp_base_volume_30d" in perp_data:
-                            drift_data[symbol]['drift_perp_markets'][market_name]['drift_perp_base_volume_30d'] = perp_data.get('drift_perp_base_volume_30d', 0.0)
+                for market_name, perp_api_data in api_market_data.get('drift_perp_markets', {}).items():
+                    if market_name in combined_drift_data[symbol].get('drift_perp_markets', {}):
+                        # Update with both quote and base volumes from API
+                        combined_drift_data[symbol]['drift_perp_markets'][market_name]['drift_perp_quote_volume_30d'] = perp_api_data.get('drift_perp_quote_volume_30d', 0.0)
+                        combined_drift_data[symbol]['drift_perp_markets'][market_name]['drift_perp_base_volume_30d'] = perp_api_data.get('drift_perp_base_volume_30d', 0.0)
                 
                 # Update spot market volumes
-                for market_name, spot_data in api_market_data.get('drift_spot_markets', {}).items():
-                    if market_name in drift_data[symbol].get('drift_spot_markets', {}):
-                        # Update with both quote and base volumes
-                        if "drift_spot_quote_volume_30d" in spot_data:
-                            drift_data[symbol]['drift_spot_markets'][market_name]['drift_spot_quote_volume_30d'] = spot_data.get('drift_spot_quote_volume_30d', 0.0)
-                        if "drift_spot_base_volume_30d" in spot_data:
-                            drift_data[symbol]['drift_spot_markets'][market_name]['drift_spot_base_volume_30d'] = spot_data.get('drift_spot_base_volume_30d', 0.0)
+                for market_name, spot_api_data in api_market_data.get('drift_spot_markets', {}).items():
+                    if market_name in combined_drift_data[symbol].get('drift_spot_markets', {}):
+                         # Update with both quote and base volumes from API
+                        combined_drift_data[symbol]['drift_spot_markets'][market_name]['drift_spot_quote_volume_30d'] = spot_api_data.get('drift_spot_quote_volume_30d', 0.0)
+                        combined_drift_data[symbol]['drift_spot_markets'][market_name]['drift_spot_base_volume_30d'] = spot_api_data.get('drift_spot_base_volume_30d', 0.0)
                 
-                # Update total volumes
-                if "drift_total_quote_volume_30d" in api_market_data:
-                    drift_data[symbol]['drift_total_quote_volume_30d'] = api_market_data.get('drift_total_quote_volume_30d', 0.0)
-                if "drift_total_base_volume_30d" in api_market_data:
-                    drift_data[symbol]['drift_total_base_volume_30d'] = api_market_data.get('drift_total_base_volume_30d', 0.0)
+                # Update total volumes at symbol level from API data
+                combined_drift_data[symbol]['drift_total_quote_volume_30d'] = api_market_data.get('drift_total_quote_volume_30d', 0.0)
+                combined_drift_data[symbol]['drift_total_base_volume_30d'] = api_market_data.get('drift_total_base_volume_30d', 0.0)
+                
+                # Note: OI, leverage, funding rate should already be present from fetch_driftpy_data
+
+        # Process the combined drift data (calculate totals, clean structure)
+        final_drift_data = process_drift_markets([], combined_drift_data) # Pass combined data
+
+        # Score the assets using CoinGecko data and the final processed Drift data
+        scored_data = score_assets(coingecko_data, final_drift_data)
         
-        # Integrate drift data into coingecko data
-        for asset in coingecko_data:
-            symbol = asset["symbol"]
-            
-            # Add Drift data if available
-            if symbol in drift_data:
-                asset["drift_data"] = drift_data[symbol]
-            else:
-                # Add default drift data for non-listed assets
-                asset["drift_data"] = {
-                    "drift_is_listed_spot": "false",
-                    "drift_is_listed_perp": "false",
-                    "drift_perp_markets": {},
-                    "drift_spot_markets": {},
-                    "drift_total_quote_volume_30d": 0.0,
-                    "drift_total_base_volume_30d": 0.0,
-                    "drift_max_leverage": 0.0,
-                    "drift_open_interest": 0.0,
-                    "drift_funding_rate_1h": 0.0
-                }
-        
-        # Score the aggregated data
-        scored_data = score_assets(coingecko_data, drift_data)
-        
-        # Process Drift markets data and update drift_data dictionary
-        drift_data = process_drift_markets(scored_data, drift_data)
+        # The 'drift_data' key within each scored_asset item now holds the final processed data
+        # The structure is already integrated during score_assets
         
         logger.info(f"Successfully aggregated and scored data for {len(scored_data)} assets")
         return scored_data
@@ -928,4 +948,9 @@ def main(vat: Vat, number_of_tokens: int = 2) -> List[Dict]:
         return []
 
 if __name__ == "__main__":
-    main()
+    # Example of how to run locally if needed (requires setting up Vat)
+    # from driftpy.pickle.vat import Vat
+    # vat = Vat(...) # Initialize Vat somehow
+    # results = main(vat, 25)
+    # print(results)
+    pass # Cannot run directly without Vat initialization
