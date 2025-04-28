@@ -329,7 +329,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
     # Constants for trade fetching
     DAYS_TO_CONSIDER = 30
     DRIFT_DATA_API_BASE = os.getenv("DRIFT_DATA_API_BASE_URL", "https://data.api.drift.trade")
-    DRIFT_DATA_API_AUTH = os.getenv("DRIFT_DATA_API_AUTH", "")  # Get auth token from env
+    DRIFT_DATA_API_AUTH = os.getenv("DRIFT_DATA_API_AUTH_KEY", "")  # Get auth token from env
     DRIFT_DATA_API_HEADERS = {
         "accept": "application/json",
         "x-origin-verify": DRIFT_DATA_API_AUTH  # Use x-origin-verify header
