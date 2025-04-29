@@ -175,8 +175,27 @@ def market_recommender_page():
             # Convert list of dictionaries to DataFrame (original data from API)
             df = pd.DataFrame(data)
 
-            # Create checkbox for filtering *before* processing data for display
-            show_only_listed = st.checkbox("Show only tokens listed on Drift", value=False)
+            # Create filtering options
+            st.subheader("Filter Options")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                show_only_listed = st.checkbox("Show only tokens listed on Drift", value=False)
+                show_only_unlisted = st.checkbox("Show only tokens not listed on Drift", value=False)
+                
+                # Prevent mutually exclusive options from both being selected
+                if show_only_listed and show_only_unlisted:
+                    st.error("Cannot show both listed and unlisted tokens simultaneously. Please uncheck one option.")
+                    show_only_unlisted = False  # Default to showing listed if both are checked
+            
+            with col2:
+                # Get unique recommendations for the filter
+                unique_recommendations = sorted(df['recommendation'].unique().tolist())
+                selected_recommendations = st.multiselect(
+                    "Filter by Recommendation",
+                    options=unique_recommendations,
+                    help="Select one or more recommendations to filter the table"
+                )
 
             # Create a DataFrame for display purposes
             display_df = pd.DataFrame()
@@ -195,11 +214,9 @@ def market_recommender_page():
                 'Drift Volume Score': 0.0, 'OI Score': 0.0, 'Global Volume Score': 0.0, 'FDV Score': 0.0
             }
             for col, default_val in metric_cols_init.items():
-                 display_df[col] = default_val
-
+                display_df[col] = default_val
 
             # Populate display_df using original df index (idx)
-            # This ensures correct alignment before filtering or setting index
             for idx, row in df.iterrows():
                 # Direct fields from the root level of API response items
                 display_df.at[idx, 'Total Score'] = float(row.get('total_score', 0))
@@ -226,33 +243,35 @@ def market_recommender_page():
                     display_df.at[idx, 'Max Leverage'] = float(drift_data.get('drift_max_leverage', 0))
                     display_df.at[idx, 'Drift Volume (30d)'] = float(drift_data.get('drift_total_quote_volume_30d', 0))
 
-                # Nested: raw_metrics (Consider removing if direct extraction is reliable)
-                # raw_metrics = row.get('raw_metrics', {})
-                # if isinstance(raw_metrics, dict):
-                    # # Backup logic examples:
-                    # if pd.isna(display_df.at[idx, 'Market Cap']) or display_df.at[idx, 'Market Cap'] == 0:
-                    #     display_df.at[idx, 'Market Cap'] = float(raw_metrics.get('fdv', 0))
-                    # if pd.isna(display_df.at[idx, 'Drift OI']) or display_df.at[idx, 'Drift OI'] == 0:
-                    #     display_df.at[idx, 'Drift OI'] = float(raw_metrics.get('drift_open_interest', 0))
-
-
             # --- Filter BEFORE setting index ---
-            if show_only_listed:
-                # Determine original indices to keep based on drift_data in the *original* df
-                indices_to_keep = []
+            # Initialize indices_to_keep with all indices
+            indices_to_keep = list(df.index)
+
+            # Filter by listing status
+            if show_only_listed or show_only_unlisted:
+                listing_indices = []
                 for idx, row in df.iterrows():
                     drift_data = row.get('drift_data', {})
-                    # Check if 'drift_is_listed_perp' is explicitly 'true' (as string from backend)
-                    if isinstance(drift_data, dict) and drift_data.get('drift_is_listed_perp') == 'true':
-                        indices_to_keep.append(idx)
+                    is_listed = isinstance(drift_data, dict) and drift_data.get('drift_is_listed_perp') == 'true'
+                    if (show_only_listed and is_listed) or (show_only_unlisted and not is_listed):
+                        listing_indices.append(idx)
+                indices_to_keep = [idx for idx in indices_to_keep if idx in listing_indices]
 
-                # Filter the display_df using the determined indices
-                if indices_to_keep:
-                    display_df = display_df.loc[indices_to_keep].copy() # Use .copy() to avoid SettingWithCopyWarning
-                else:
-                    display_df = pd.DataFrame(columns=display_df.columns) # Empty DF if no listed tokens
-                st.write(f"Showing {len(display_df)} tokens currently listed on Drift Perps")
+            # Filter by recommendations
+            if selected_recommendations:
+                recommendation_indices = df[df['recommendation'].isin(selected_recommendations)].index.tolist()
+                indices_to_keep = [idx for idx in indices_to_keep if idx in recommendation_indices]
 
+            # Apply filters to display_df
+            if indices_to_keep:
+                display_df = display_df.loc[indices_to_keep].copy()  # Use .copy() to avoid SettingWithCopyWarning
+            else:
+                display_df = pd.DataFrame(columns=display_df.columns)  # Empty DF if no tokens match filters
+
+            # Show filter results summary
+            total_tokens = len(df)
+            filtered_tokens = len(display_df)
+            st.write(f"Showing {filtered_tokens} out of {total_tokens} tokens based on selected filters")
 
             # --- Final Preparations for Display ---
             # Sort by Total Score descending
@@ -266,7 +285,7 @@ def market_recommender_page():
             formatters = {
                 'Market Cap': format_large_number,
                 '30d Volume': format_large_number,
-                '24h Volume': format_large_number, # Ensure 24h formatter is included
+                '24h Volume': format_large_number,
                 'Drift OI': format_large_number,
                 'Drift Volume (30d)': format_large_number,
                 'Max Leverage': lambda x: f"{int(x)}x" if pd.notna(x) and x > 0 else "N/A",

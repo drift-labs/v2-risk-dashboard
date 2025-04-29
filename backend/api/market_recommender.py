@@ -1,13 +1,22 @@
 # This is the new version of the market recommender which makes use of the coingecko API via the /backend/utils/coingecko_api.py utility script.
 
+import os
+import time
 import logging
-from typing import Dict, List
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any
 from fastapi import APIRouter
-from backend.utils.coingecko_api import fetch_all_coingecko_market_data, fetch_all_coingecko_volumes
 from driftpy.pickle.vat import Vat
 from backend.state import BackendRequest
-import os
-from datetime import datetime, timedelta
+from backend.utils.cache_utils import ttl_cache
+from backend.utils.coingecko_api import (
+    fetch_all_coingecko_market_data,
+    fetch_all_coingecko_volumes
+)
+from backend.utils.drift_data_api import (
+    fetch_drift_data_api_data,
+    clean_market_name
+)
 
 # --- Constants ---
 PRICE_PRECISION = 1e6  # Add price precision constant
@@ -16,7 +25,32 @@ MARKET_BASE_DECIMALS = {
 }
 
 # Symbols to ignore
-IGNORE_SYMBOLS = ['USDT', 'USDC']
+IGNORED_SYMBOLS = ['USDT', 'USDC', 'USDE', 'USDS', 'SUSDS']
+
+# Basket market prefixes to strip when normalizing symbols
+BASKET_MARKET_PREFIXES = {
+    '1M': '',  # e.g., 1MPEPE -> PEPE
+    '1K': '',  # e.g., 1KWEN -> WEN
+}
+
+# Drift perp markets to ignore
+IGNORED_DRIFT_PERP_MARKETS = [
+    {"index": 39, "name": "REPUBLICAN-POPULAR-AND-WIN-BET"},
+    {"index": 38, "name": "FED-CUT-50-SEPT-2024-BET"},
+    {"index": 50, "name": "LNDO-WIN-F1-24-US-GP"},
+    {"index": 37, "name": "KAMALA-POPULAR-VOTE-2024-BET"},
+    {"index": 49, "name": "VRSTPN-WIN-F1-24-DRVRS-CHMP"},
+    {"index": 68, "name": "NBAFINALS25-BOS-BET"},
+    {"index": 67, "name": "NBAFINALS25-OKC-BET"},
+    {"index": 40, "name": "BREAKPOINT-IGGYERIC-BET"},
+    {"index": 48, "name": "WLF-5B-1W-BET"},
+    {"index": 58, "name": "SUPERBOWL-LIX-CHIEFS-BET"},
+    {"index": 57, "name": "SUPERBOWL-LIX-LIONS-BET"},
+    {"index": 43, "name": "LANDO-F1-SGP-WIN-BET"},
+    {"index": 41, "name": "DEMOCRATS-WIN-MICHIGAN-BET"},
+    {"index": 46, "name": "WARWICK-FIGHT-WIN-BET"},
+    {"index": 36, "name": "TRUMP-WIN-2024-BET"}
+]
 
 # Symbol conversions
 SYMBOL_CONVERSIONS = {
@@ -47,9 +81,11 @@ async def get_market_data(request: BackendRequest, number_of_tokens: int = 2):
     """
     return main(request.state.backend_state.vat, number_of_tokens)
 
+@ttl_cache(ttl_seconds=43200)  # Cache for 12 hours
 def fetch_coingecko_market_data(number_of_tokens: int = 2) -> List[Dict]:
     """
     Fetches market data for top N coins from CoinGecko API.
+    Responses are cached for 12 hours.
     
     Args:
         number_of_tokens (int, optional): Number of tokens to fetch data for. Defaults to 2.
@@ -57,20 +93,22 @@ def fetch_coingecko_market_data(number_of_tokens: int = 2) -> List[Dict]:
     Returns:
         List of dictionaries containing market data for each coin
     """
-    logger.info(f"Fetching market data for top {number_of_tokens} coins from CoinGecko...")
+    logger.info(f"🔍 Attempting to fetch market data for top {number_of_tokens} coins...")
     
     try:
-        # Fetch market data
+        # Fetch market data (this call is now cached)
+        logger.info("📊 Fetching CoinGecko market data...")
         market_data = fetch_all_coingecko_market_data(number_of_tokens)
         
         if not market_data:
-            logger.error("Failed to fetch market data from CoinGecko")
+            logger.error("❌ Failed to fetch market data from CoinGecko")
             return []
         
         # Get list of coin IDs for volume fetching
         coin_ids = list(market_data.keys())
+        logger.info(f"📈 Found {len(coin_ids)} coins, fetching volume data...")
         
-        # Fetch 30-day volume data
+        # Fetch 30-day volume data (this call is now cached)
         volume_data = fetch_all_coingecko_volumes(coin_ids)
         
         # Format response data
@@ -97,16 +135,16 @@ def fetch_coingecko_market_data(number_of_tokens: int = 2) -> List[Dict]:
                     }
                 }
                 formatted_data.append(formatted_entry)
-                logger.info(f"Processed market data for {formatted_entry['symbol']}")
+                logger.debug(f"✅ Processed market data for {formatted_entry['symbol']}")
             except Exception as e:
-                logger.error(f"Error formatting data for coin {coin_id}: {e}")
+                logger.error(f"❌ Error formatting data for coin {coin_id}: {e}")
                 continue
         
-        logger.info(f"Successfully processed market data for {len(formatted_data)} coins")
+        logger.info(f"✨ Successfully processed market data for {len(formatted_data)} coins")
         return formatted_data
     
     except Exception as e:
-        logger.error(f"Error in fetch_coingecko_market_data: {e}", exc_info=True)
+        logger.error(f"❌ Error in fetch_coingecko_market_data: {e}", exc_info=True)
         return []
     
 def fetch_driftpy_data(vat: Vat) -> Dict:
@@ -173,17 +211,22 @@ def fetch_driftpy_data(vat: Vat) -> Dict:
             try:
                 # Get market name and clean it
                 market_name = bytes(market.data.name).decode('utf-8').strip('\x00').strip()
+                # Check if this market should be ignored
+                if any(ignored_market["index"] == market.data.market_index for ignored_market in IGNORED_DRIFT_PERP_MARKETS):
+                    logger.info(f"Skipping ignored market: {market_name} (index: {market.data.market_index})")
+                    continue
+
                 # Preserve original case for API calls
                 original_market_name = market_name
                 
-                # Extract symbol from market name (e.g., "BTC-PERP" -> "BTC")
-                # Keep original case for API calls, but use uppercase for dictionary keys
+                # Extract symbol from market name and handle basket markets
+                # e.g., "1MPEPE-PERP" -> "PEPE", "1KWEN-PERP" -> "WEN"
                 symbol_parts = market_name.split('-')
                 if len(symbol_parts) > 0:
-                    # Use uppercase for normalized symbol (dictionary keys)
-                    normalized_symbol = symbol_parts[0].upper().strip()
+                    # Clean the symbol part (removes basket prefixes)
+                    normalized_symbol = clean_market_name(symbol_parts[0]).upper()
                 else:
-                    normalized_symbol = market_name.upper().strip()
+                    normalized_symbol = clean_market_name(market_name).upper()
                 
                 # Get oracle price from perp_oracles
                 market_price = vat.perp_oracles.get(market.data.market_index)
@@ -382,13 +425,13 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         
         return {"success": False, "records": [], "meta": {"totalRecords": 0}}
 
-    def fetch_market_trades(symbol: str, start_date: datetime, end_date: datetime = None) -> List[Dict]:
+    def fetch_market_trades(market_name: str, start_date: datetime, end_date: datetime = None) -> List[Dict]:
         """
-        Fetch market candle data for a symbol using the candles endpoint.
-        This replaces the inefficient day-by-day trade fetching with a single API call.
+        Fetch market candle data for a market using the candles endpoint.
+        Uses the original market name (e.g., "1MPEPE-PERP") for API calls.
         
         Args:
-            symbol: Market symbol (e.g., "SOL-PERP")
+            market_name: Original market name (e.g., "1MPEPE-PERP", "SOL-PERP")
             start_date: Start date for candle data
             end_date: End date for candle data (defaults to current time)
             
@@ -398,8 +441,8 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         if end_date is None:
             end_date = datetime.now()
         
-        # Log the start of fetching for this symbol
-        logger.info(f"Starting to fetch candle data for {symbol} from {start_date} to {end_date}")
+        # Log the start of fetching for this market
+        logger.info(f"Starting to fetch candle data for {market_name} from {start_date} to {end_date}")
         
         # Convert dates to Unix timestamps (seconds)
         # NOTE: For the Drift API, startTs should be the more recent timestamp (end_date)
@@ -416,7 +459,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         
         # Use the candles endpoint with daily resolution (D)
         # The API expects: startTs = most recent, endTs = oldest (reverse of what might be expected)
-        url = f"{DRIFT_DATA_API_BASE}/market/{symbol}/candles/D?startTs={start_ts}&endTs={end_ts}&limit={min(days, 31)}"
+        url = f"{DRIFT_DATA_API_BASE}/market/{market_name}/candles/D?startTs={start_ts}&endTs={end_ts}&limit={min(days, 31)}"
         
         logger.info(f"Requesting candles with startTs={start_ts} (now), endTs={end_ts} (past)")
         
@@ -425,19 +468,19 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         
         if data.get("success") and "records" in data:
             records_count = len(data["records"])
-            logger.info(f"Successfully fetched {records_count} candles for {symbol}")
+            logger.info(f"Successfully fetched {records_count} candles for {market_name}")
             return data["records"]
         else:
-            logger.warning(f"Failed to fetch candle data for {symbol}")
+            logger.warning(f"Failed to fetch candle data for {market_name}")
             return []
     
-    def calculate_market_volume(symbol: str) -> dict:
+    def calculate_market_volume(market_name: str) -> dict:
         """
         Calculate total trading volume for a market over the past 30 days using candle data.
-        Returns both quote volume (in USD) and base volume (in token units).
+        Uses the original market name for API calls.
         
         Args:
-            symbol: Market symbol (e.g., "SOL-PERP")
+            market_name: Original market name (e.g., "1MPEPE-PERP", "SOL-PERP")
             
         Returns:
             dict: Dictionary with quote_volume and base_volume
@@ -446,7 +489,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         start_date = end_date - timedelta(days=DAYS_TO_CONSIDER)
         
         try:
-            candles = fetch_market_trades(symbol, start_date, end_date)
+            candles = fetch_market_trades(market_name, start_date, end_date)
             
             total_quote_volume = 0.0
             total_base_volume = 0.0
@@ -462,7 +505,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
                 except (ValueError, TypeError):
                     continue
             
-            logger.info(f"Calculated {DAYS_TO_CONSIDER}-day volumes for {symbol}: " 
+            logger.info(f"Calculated {DAYS_TO_CONSIDER}-day volumes for {market_name}: " 
                         f"${total_quote_volume:,.2f} (quote), {total_base_volume:,.2f} (base)")
             
             return {
@@ -471,7 +514,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
             }
             
         except Exception as e:
-            logger.error(f"Error calculating volume for {symbol}: {str(e)}")
+            logger.error(f"Error calculating volume for {market_name}: {str(e)}")
             return {
                 "quote_volume": 0.0,
                 "base_volume": 0.0
@@ -486,7 +529,10 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
         logger.info(f"Processing {len(discovered_markets)} discovered markets")
         
         for symbol, market_info in discovered_markets.items():
-            drift_markets[symbol] = {
+            # Clean the symbol to handle basket markets
+            normalized_symbol = clean_market_name(symbol).upper()
+            
+            drift_markets[normalized_symbol] = {
                 "drift_is_listed_spot": market_info.get("drift_is_listed_spot", "false"),
                 "drift_is_listed_perp": market_info.get("drift_is_listed_perp", "false"),
                 "drift_perp_markets": {},
@@ -502,11 +548,17 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
             total_quote_volume = 0.0
             total_base_volume = 0.0
             for perp_market_name in market_info.get("drift_perp_markets", {}):
+                # Check if this market should be ignored
+                market_index = next((market["index"] for market in IGNORED_DRIFT_PERP_MARKETS if market["name"] == perp_market_name), None)
+                if market_index is not None:
+                    logger.info(f"Skipping ignored perp market: {perp_market_name}")
+                    continue
+
                 # Use original market name (case-preserved) for API call
                 logger.info(f"Calculating volume for perp market: {perp_market_name} (preserving case)")
                 volume_data = calculate_market_volume(perp_market_name)  # Returns dict with quote and base volumes
                 
-                drift_markets[symbol]["drift_perp_markets"][perp_market_name] = {
+                drift_markets[normalized_symbol]["drift_perp_markets"][perp_market_name] = {
                     "drift_perp_oracle_price": market_info["drift_perp_markets"][perp_market_name].get("drift_perp_oracle_price", 0.0),
                     "drift_perp_quote_volume_30d": volume_data["quote_volume"],
                     "drift_perp_base_volume_30d": volume_data["base_volume"],
@@ -522,7 +574,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
                 logger.info(f"Calculating volume for spot market: {spot_market_name} (preserving case)")
                 volume_data = calculate_market_volume(spot_market_name)  # Returns dict with quote and base volumes
                 
-                drift_markets[symbol]["drift_spot_markets"][spot_market_name] = {
+                drift_markets[normalized_symbol]["drift_spot_markets"][spot_market_name] = {
                     "drift_spot_oracle_price": market_info["drift_spot_markets"][spot_market_name].get("drift_spot_oracle_price", 0.0),
                     "drift_spot_quote_volume_30d": volume_data["quote_volume"],
                     "drift_spot_base_volume_30d": volume_data["base_volume"],
@@ -532,13 +584,13 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
                 total_base_volume += volume_data["base_volume"]
             
             # Update total volumes
-            drift_markets[symbol]["drift_total_quote_volume_30d"] = total_quote_volume
-            drift_markets[symbol]["drift_total_base_volume_30d"] = total_base_volume
+            drift_markets[normalized_symbol]["drift_total_quote_volume_30d"] = total_quote_volume
+            drift_markets[normalized_symbol]["drift_total_base_volume_30d"] = total_base_volume
             
             # Update OI and funding rate if perp markets exist
             if market_info.get("drift_is_listed_perp") == "true":
-                drift_markets[symbol]["drift_open_interest"] = total_quote_volume * 0.75  # Example calculation
-                drift_markets[symbol]["drift_funding_rate_1h"] = market_info.get("drift_funding_rate_1h", 0.0)
+                drift_markets[normalized_symbol]["drift_open_interest"] = total_quote_volume * 0.75  # Example calculation
+                drift_markets[normalized_symbol]["drift_funding_rate_1h"] = market_info.get("drift_funding_rate_1h", 0.0)
     
     except Exception as e:
         logger.error(f"Error in fetch_drift_data_api_data: {e}")
@@ -818,8 +870,11 @@ def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
         if not symbol:
             continue
             
+        # Clean and normalize the symbol to handle basket markets
+        normalized_symbol = clean_market_name(symbol).upper()
+            
         # Initialize default structure for the symbol
-        processed_drift_data[symbol] = {
+        processed_drift_data[normalized_symbol] = {
             "drift_is_listed_perp": symbol_drift_data.get('drift_is_listed_perp', 'false'),
             "drift_is_listed_spot": symbol_drift_data.get('drift_is_listed_spot', 'false'),
             "drift_perp_markets": symbol_drift_data.get('drift_perp_markets', {}),
@@ -836,7 +891,7 @@ def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
         total_base_volume = 0.0
         
         # Sum volumes from perp markets
-        for market_name, market_data in processed_drift_data[symbol].get("drift_perp_markets", {}).items():
+        for market_name, market_data in processed_drift_data[normalized_symbol].get("drift_perp_markets", {}).items():
             total_quote_volume += market_data.get("drift_perp_quote_volume_30d", 0.0)
             total_base_volume += market_data.get("drift_perp_base_volume_30d", 0.0)
             # Clean up redundant/old fields if they exist
@@ -846,7 +901,7 @@ def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
                  del market_data["drift_perp_oi"]
 
         # Sum volumes from spot markets
-        for market_name, market_data in processed_drift_data[symbol].get("drift_spot_markets", {}).items():
+        for market_name, market_data in processed_drift_data[normalized_symbol].get("drift_spot_markets", {}).items():
             total_quote_volume += market_data.get("drift_spot_quote_volume_30d", 0.0)
             total_base_volume += market_data.get("drift_spot_base_volume_30d", 0.0)
              # Clean up redundant/old fields if they exist
@@ -854,16 +909,15 @@ def process_drift_markets(scored_data: List[Dict], drift_data: Dict) -> Dict:
                 del market_data["drift_spot_volume_30d"]
                 
         # Update total volumes at the symbol level
-        processed_drift_data[symbol]["drift_total_quote_volume_30d"] = total_quote_volume
-        processed_drift_data[symbol]["drift_total_base_volume_30d"] = total_base_volume
+        processed_drift_data[normalized_symbol]["drift_total_quote_volume_30d"] = total_quote_volume
+        processed_drift_data[normalized_symbol]["drift_total_base_volume_30d"] = total_base_volume
         
         # Ensure OI and funding rate are correctly placed (usually associated with perps)
         # If no perps listed, these should likely be 0 or handled appropriately
-        if processed_drift_data[symbol]["drift_is_listed_perp"] == 'false':
-             processed_drift_data[symbol]["drift_open_interest"] = 0.0
-             processed_drift_data[symbol]["drift_funding_rate_1h"] = 0.0
-             processed_drift_data[symbol]["drift_max_leverage"] = 0.0 # Max leverage applies to perps
-
+        if processed_drift_data[normalized_symbol]["drift_is_listed_perp"] == 'false':
+             processed_drift_data[normalized_symbol]["drift_open_interest"] = 0.0
+             processed_drift_data[normalized_symbol]["drift_funding_rate_1h"] = 0.0
+             processed_drift_data[normalized_symbol]["drift_max_leverage"] = 0.0 # Max leverage applies to perps
 
     return processed_drift_data
 
