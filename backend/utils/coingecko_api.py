@@ -10,6 +10,7 @@ import requests
 import logging
 from typing import Dict, List, Optional, Union, Tuple
 from datetime import datetime
+from backend.utils.cache_utils import ttl_cache
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -19,10 +20,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- API Configuration ---
-COINGECKO_API_BASE = "https://api.coingecko.com/api/v3"
-COINGECKO_DEMO_API_KEY = "CG-oWyNSQuvyZMKCDzL3yqGzyrh"  # Demo key
-COINGECKO_REQ_PER_MINUTE = 30  # Conservative rate limit
-COINGECKO_RATE_LIMIT_DELAY = 2 # Reduced from 60s to 15s
+if os.getenv("DEV") == "false":
+    COINGECKO_API_BASE = os.getenv("COINGECKO_DEMO_API_BASE_URL", "")
+    COINGECKO_API_KEY = os.getenv("COINGECKO_DEMO_API_KEY", "")
+    COINGECKO_API_HEADER = os.getenv("COINGECKO_DEMO_API_HEADER", "")
+    COINGECKO_RATE_LIMIT_DELAY = 2 # Demo API rate limit is 30
+    logger.info("CoinGecko Demo API configuration loaded")
+else:
+    COINGECKO_API_BASE = os.getenv("COINGECKO_PRO_API_BASE_URL", "")
+    COINGECKO_API_KEY = os.getenv("COINGECKO_PRO_API_KEY", "")
+    COINGECKO_API_HEADER = os.getenv("COINGECKO_PRO_API_HEADER", "")
+    COINGECKO_RATE_LIMIT_DELAY = .25 # Pro API rate limit is 500 RPM but is shared with app.drift.trade
+    logger.info("CoinGecko Pro API configuration loaded")
+
 MAX_COINS_PER_PAGE = 250  # Maximum allowed by CoinGecko API
 
 # --- Global Rate Limiter Variables ---
@@ -122,7 +132,7 @@ def fetch_coingecko(endpoint: str, params: Dict = None) -> Optional[Union[List, 
     # Exact headers from the successful example
     headers = {
         'accept': 'application/json',
-        'x-cg-demo-api-key': COINGECKO_DEMO_API_KEY,
+        COINGECKO_API_HEADER: COINGECKO_API_KEY,
     }
     
     max_retries = 3
@@ -215,9 +225,12 @@ def calculate_pagination(total_tokens: int) -> List[Tuple[int, int]]:
     
     return pagination
 
+@ttl_cache(ttl_seconds=43200)  # Cache for 12 hours
 def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
     """
     Fetches data from CG /coins/markets using the exact parameters that worked.
+    Filters out any tokens whose symbols are in IGNORED_SYMBOLS.
+    Responses are cached for 12 hours.
     
     Args:
         number_of_tokens: Number of top tokens by market cap to fetch (default: 250)
@@ -225,18 +238,23 @@ def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
     Returns:
         Dict mapping coin IDs to their market data
     """
+    from backend.api.market_recommender import IGNORED_SYMBOLS
+    
     all_markets_data = {}
     total_tokens_received = 0
+    total_tokens_after_filtering = 0
     
-    # Calculate pagination strategy
-    pagination = calculate_pagination(number_of_tokens)
+    # Calculate pagination strategy - request more tokens to account for filtering
+    # Add the number of ignored symbols to ensure we still get the requested number after filtering
+    adjusted_token_count = number_of_tokens + len(IGNORED_SYMBOLS)
+    pagination = calculate_pagination(adjusted_token_count)
     total_pages = len(pagination)
     
     if not pagination:
         logger.warning("Invalid number of tokens requested. Returning empty result.")
         return all_markets_data
     
-    logger.info(f"Fetching market data from CoinGecko for {number_of_tokens} tokens across {total_pages} pages...")
+    logger.info(f"Fetching market data from CoinGecko for {adjusted_token_count} tokens across {total_pages} pages...")
     
     try:
         for page_num, tokens_this_page in pagination:
@@ -276,6 +294,11 @@ def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
                     
                     symbol = market.get('symbol', '').upper()
                     
+                    # Skip ignored symbols
+                    if symbol in IGNORED_SYMBOLS:
+                        logger.info(f"Skipping ignored symbol: {symbol}")
+                        continue
+                    
                     market_data = {
                         'symbol': symbol,
                         'name': market.get('name'),
@@ -293,7 +316,14 @@ def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
                     }
                     
                     all_markets_data[coin_id] = market_data
+                    total_tokens_after_filtering += 1
                     logger.info(f"Processed market data for {symbol} (ID: {coin_id})")
+                    
+                    # If we have enough tokens after filtering, stop processing
+                    if total_tokens_after_filtering >= number_of_tokens:
+                        logger.info(f"Reached requested number of tokens ({number_of_tokens}) after filtering. Stopping.")
+                        return all_markets_data
+                        
                 except Exception as e:
                     logger.warning(f"Error processing market: {e}")
                     continue
@@ -306,10 +336,10 @@ def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
             if page_num < total_pages:
                 time.sleep(COINGECKO_RATE_LIMIT_DELAY)
         
-        if total_tokens_received < number_of_tokens:
-            logger.warning(f"Requested {number_of_tokens} tokens but only received {total_tokens_received}. This appears to be all available tokens.")
+        if total_tokens_after_filtering < number_of_tokens:
+            logger.warning(f"Requested {number_of_tokens} tokens but only received {total_tokens_after_filtering} after filtering ignored symbols. This appears to be all available tokens.")
         
-        logger.info(f"Successfully fetched data for {len(all_markets_data)} markets from CoinGecko")
+        logger.info(f"Successfully fetched data for {len(all_markets_data)} markets from CoinGecko after filtering ignored symbols")
         return all_markets_data
     except Exception as e:
         logger.error(f"Error fetching CoinGecko market data: {e}", exc_info=True)
@@ -358,9 +388,11 @@ def fetch_coin_volume(coin_id: str) -> Optional[float]:
         logger.error(f"Error fetching volume data for {coin_id}: {e}")
         return None
 
+@ttl_cache(ttl_seconds=43200)  # Cache for 12 hours
 def fetch_all_coingecko_volumes(coin_ids: list) -> dict:
     """
     Fetches 30d volume data from CG /coins/{id}/market_chart.
+    Responses are cached for 12 hours.
     
     Args:
         coin_ids: List of CoinGecko coin IDs
