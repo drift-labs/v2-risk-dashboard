@@ -11,6 +11,4 @@ from . import (
     snapshot,
     ucache,
     vaults,
-    delist_recommender,
-    list_recommender,
 )
