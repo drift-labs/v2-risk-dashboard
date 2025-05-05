@@ -14,6 +14,7 @@ from backend.api import (
     deposits,
     health,
     liquidation,
+    market_recommender_api,
     metadata,
     pnl,
     positions,
@@ -21,7 +22,6 @@ from backend.api import (
     snapshot,
     ucache,
     vaults,
-    market_recommender,
 )
 from backend.middleware.cache_middleware import CacheMiddleware
 from backend.middleware.readiness import ReadinessMiddleware
@@ -87,7 +87,7 @@ app.include_router(deposits.router, prefix="/api/deposits", tags=["deposits"])
 app.include_router(pnl.router, prefix="/api/pnl", tags=["pnl"])
 app.include_router(vaults.router, prefix="/api/vaults", tags=["vaults"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
-app.include_router(market_recommender.router, prefix="/api/market-recommender", tags=["market-recommender"])
+app.include_router(market_recommender_api.router, prefix="/api/market-recommender", tags=["market-recommender"])
 # NOTE: All other routes should be in /api/* within the /api folder. Routes outside of /api are not exposed in k8s
 @app.get("/")
 async def root():
