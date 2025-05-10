@@ -20,9 +20,7 @@ from page.price_shock import price_shock_cached_page
 from page.swap import show as swap_page
 from page.vaults import vaults_page
 from page.welcome import welcome_page
-from page.list_recommender import list_recommender_page
-from page.delist_recommender import delist_recommender_page
-from page.market_recommender import market_recommender_page
+from page.market_recommender_page import market_recommender_page
 
 load_dotenv()
 
