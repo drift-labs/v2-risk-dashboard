@@ -238,7 +238,7 @@ def fetch_all_coingecko_market_data(number_of_tokens: int = 250) -> dict:
     Returns:
         Dict mapping coin IDs to their market data
     """
-    from backend.api.market_recommender import IGNORED_SYMBOLS
+    from backend.api.market_recommender_api import IGNORED_SYMBOLS
     
     all_markets_data = {}
     total_tokens_received = 0

@@ -281,7 +281,7 @@ def fetch_drift_data_api_data(discovered_markets: Dict = None) -> Dict:
 
 def clean_market_name(market_name: str) -> str:
     """Clean market name by removing basket prefixes and -PERP suffix."""
-    from backend.api.market_recommender import BASKET_MARKET_PREFIXES
+    from backend.api.market_recommender_api import BASKET_MARKET_PREFIXES
     
     # First remove any -PERP suffix
     name = market_name.split('-')[0].strip()
