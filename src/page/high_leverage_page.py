@@ -93,7 +93,10 @@ def high_leverage_page():
                         'position_leverage': 'Position Leverage'
                     }, inplace=True)
                     
-                    # Ensure leverage columns are numeric for sorting
+                    # Ensure numeric types for sorting
+                    # Convert after renaming as column names in df_positions have changed
+                    df_positions['Base Asset Amount'] = pd.to_numeric(df_positions['Base Asset Amount'], errors='coerce')
+                    df_positions['Notional Value (USD)'] = pd.to_numeric(df_positions['Notional Value (USD)'], errors='coerce')
                     df_positions['Position Leverage'] = pd.to_numeric(df_positions['Position Leverage'], errors='coerce')
                     df_positions['Account Leverage'] = pd.to_numeric(df_positions['Account Leverage'], errors='coerce')
 
@@ -110,15 +113,9 @@ def high_leverage_page():
                         'User Account',
                         'Authority',
                         'Market Index' 
-                    ]].copy() # Use .copy() to avoid SettingWithCopyWarning on the formatted DataFrame
+                    ]].copy() # Use .copy() to avoid SettingWithCopyWarning
                     
-                    # Formatting for display
-                    # Base Asset Amount and Notional Value formatting remains the same
-                    display_df['Base Asset Amount'] = display_df['Base Asset Amount'].apply(lambda x: f"{x:,.4f}" if pd.notnull(x) else 'N/A')
-                    display_df['Notional Value (USD)'] = display_df['Notional Value (USD)'].apply(lambda x: f"${x:,.2f}" if pd.notnull(x) else 'N/A')
-                    # Leverage columns formatted for display with 'x' - keep original df_positions for numerical sorting
-                    display_df['Position Leverage'] = display_df['Position Leverage'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else 'N/A')
-                    display_df['Account Leverage'] = display_df['Account Leverage'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else 'N/A')
+                    # Display formatting is now handled by Pandas Styler object below.
 
             except Exception as df_e:
                 st.error(f"Error processing detailed position data into DataFrame: {df_e}")
@@ -137,7 +134,24 @@ def high_leverage_page():
 
         st.subheader("Detailed High Leverage Positions")
         if not display_df.empty:
-            st.dataframe(display_df, hide_index=True, use_container_width=True)
+            # Apply Pandas Styler for formatting
+            styled_df = display_df.style.format({
+                'Base Asset Amount': '{:,.4f}',         # Commas, 4 decimal places
+                'Notional Value (USD)': '${:,.2f}',      # Commas, 2 decimal places, no $
+                'Position Leverage': '{:.2f}x',         # 2 decimal places, 'x' suffix
+                'Account Leverage': '{:.2f}x'          # 2 decimal places, 'x' suffix
+            })
+            st.dataframe(
+                styled_df,  # Pass the styled DataFrame
+                hide_index=True, 
+                use_container_width=True,
+                column_config={ # Keep config for non-styled columns or for relabeling if needed
+                    "Market Symbol": st.column_config.TextColumn(label="Market Symbol"),
+                    "User Account": st.column_config.TextColumn(label="User Account"),
+                    "Authority": st.column_config.TextColumn(label="Authority"),
+                    "Market Index": st.column_config.TextColumn(label="Market Index"),
+                }
+            )
         else:
             st.info("No detailed high leverage position data available, or an error occurred during processing.")
 

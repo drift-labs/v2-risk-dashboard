@@ -52,7 +52,7 @@ async def get_high_leverage_stats(request: BackendRequest):
     - Bootable spots: Users opted-in but not actively using high leverage (no significant perp positions).
     """
     
-    total_spots = 200  # Hardcoded as per user request
+    total_spots = 400  # Hardcoded maximum number of spots
 
     opted_in_users_count = 0
     bootable_count = 0
@@ -251,9 +251,3 @@ async def get_high_leverage_positions_detailed(request: BackendRequest):
             
     logger.info(f"Returning {len(detailed_hl_positions)} high leverage positions.")
     return detailed_hl_positions
-
-
-# Example of how to include this router in a main FastAPI app:
-# from fastapi import FastAPI
-# app = FastAPI()
-# app.include_router(router, prefix="/high-leverage", tags=["High Leverage"])
