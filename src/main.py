@@ -22,6 +22,7 @@ from page.vaults import vaults_page
 from page.welcome import welcome_page
 from page.market_recommender_page import market_recommender_page
 from page.open_interest_page import open_interest_page
+from page.high_leverage_page import high_leverage_page
 
 load_dotenv()
 
@@ -141,6 +142,12 @@ if __name__ == "__main__":
             url_path="open-interest",
             title="Open Interest",
             icon="💰",
+        ),
+        st.Page(
+            high_leverage_page,
+            url_path="high-leverage",
+            title="High Leverage",
+            icon="⚡",
         ),
     ]
 
