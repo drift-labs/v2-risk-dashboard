@@ -130,22 +130,22 @@ def high_leverage_page():
         cols[0].metric("Total High Leverage Spots", stats_data.get('total_spots', 'N/A'))
         cols[1].metric("Opted-In Users", stats_data.get('opted_in_spots', 'N/A'))
         cols[2].metric("Available Spots", stats_data.get('available_spots', 'N/A'))
-        cols[3].metric("Bootable Spots (Opted-in, No Position)", stats_data.get('bootable_spots', 'N/A'))
+        cols[3].metric("Bootable Spots (Inactive)", stats_data.get('bootable_spots', 'N/A')) # Updated label
 
         st.subheader("Detailed High Leverage Positions")
         if not display_df.empty:
             # Apply Pandas Styler for formatting
             styled_df = display_df.style.format({
-                'Base Asset Amount': '{:,.4f}',         # Commas, 4 decimal places
-                'Notional Value (USD)': '${:,.2f}',      # Commas, 2 decimal places, no $
-                'Position Leverage': '{:.2f}x',         # 2 decimal places, 'x' suffix
-                'Account Leverage': '{:.2f}x'          # 2 decimal places, 'x' suffix
+                'Base Asset Amount': '{:,.4f}',
+                'Notional Value (USD)': '${:,.2f}',
+                'Position Leverage': '{:.2f}x',
+                'Account Leverage': '{:.2f}x'
             })
             st.dataframe(
-                styled_df,  # Pass the styled DataFrame
+                styled_df, 
                 hide_index=True, 
                 use_container_width=True,
-                column_config={ # Keep config for non-styled columns or for relabeling if needed
+                column_config={ 
                     "Market Symbol": st.column_config.TextColumn(label="Market Symbol"),
                     "User Account": st.column_config.TextColumn(label="User Account"),
                     "Authority": st.column_config.TextColumn(label="Authority"),
@@ -154,6 +154,82 @@ def high_leverage_page():
             )
         else:
             st.info("No detailed high leverage position data available, or an error occurred during processing.")
+
+        # --- 8. Fetch and Display Bootable Users Details --- 
+        st.subheader("Bootable User Details (Inactive High Leverage Users)")
+        result_bootable_users = fetch_api_data(
+            section="high-leverage",
+            path="bootable-users",
+            retry=False
+        )
+
+        if is_processing(result_bootable_users):
+            st.info(f"Backend is processing bootable user data. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds...")
+            # No need for a full page rerun here if other data is fine, but spinner helps UX
+            with st.spinner("Loading bootable users..."):
+                time.sleep(RETRY_DELAY_SECONDS) 
+            st.rerun() # Or trigger a more targeted refresh if possible
+            return 
+        
+        if has_error(result_bootable_users):
+            st.warning("Could not fetch Bootable User Details. This table will be empty.")
+            bootable_users_data = []
+        else:
+            bootable_users_data = result_bootable_users if isinstance(result_bootable_users, list) else []
+
+        df_bootable = pd.DataFrame()
+        if bootable_users_data:
+            try:
+                df_bootable = pd.DataFrame(bootable_users_data)
+                if not df_bootable.empty:
+                    df_bootable.rename(columns={
+                        'user_public_key': 'User Account',
+                        'authority': 'Authority',
+                        'account_leverage': 'Account Leverage',
+                        'activity_staleness_slots': 'Activity Staleness (Slots)',
+                        'last_active_slot': 'Last Active Slot',
+                        'initial_margin_requirement_usd': 'Initial Margin Req. (USD)',
+                        'total_collateral_usd': 'Total Collateral (USD)',
+                        'health_percent': 'Health (%)'
+                    }, inplace=True)
+
+                    # Ensure numeric types for sorting where applicable
+                    df_bootable['Account Leverage'] = pd.to_numeric(df_bootable['Account Leverage'], errors='coerce')
+                    df_bootable['Activity Staleness (Slots)'] = pd.to_numeric(df_bootable['Activity Staleness (Slots)'], errors='coerce')
+                    df_bootable['Initial Margin Req. (USD)'] = pd.to_numeric(df_bootable['Initial Margin Req. (USD)'], errors='coerce')
+                    df_bootable['Total Collateral (USD)'] = pd.to_numeric(df_bootable['Total Collateral (USD)'], errors='coerce')
+                    df_bootable['Health (%)'] = pd.to_numeric(df_bootable['Health (%)'], errors='coerce')
+
+                    # Default sort by Activity Staleness (descending)
+                    df_bootable = df_bootable.sort_values(by='Activity Staleness (Slots)', ascending=False)
+
+                    # Select and order columns for display
+                    display_bootable_df = df_bootable[[
+                        'User Account',
+                        'Authority',
+                        'Account Leverage',
+                        'Activity Staleness (Slots)',
+                        'Last Active Slot',
+                        'Initial Margin Req. (USD)',
+                        'Total Collateral (USD)',
+                        'Health (%)'
+                    ]].copy()
+
+                    # Display formatting using Pandas Styler
+                    styled_bootable_df = display_bootable_df.style.format({
+                        'Account Leverage': '{:.2f}x',
+                        'Activity Staleness (Slots)': '{:,.0f}',
+                        'Initial Margin Req. (USD)': '${:,.2f}',
+                        'Total Collateral (USD)': '${:,.2f}',
+                        'Health (%)': '{:.0f}%'
+                    })
+                    st.dataframe(styled_bootable_df, hide_index=True, use_container_width=True)
+                else:
+                    st.info("No bootable users found meeting the criteria.") # Message if data is empty after processing
+            except Exception as df_boot_e:
+                st.error(f"Error processing bootable user data into DataFrame: {df_boot_e}")
+        else:
+            st.info("No bootable user data to display.")
 
     except Exception as e:
         st.error(f"An error occurred while displaying the page: {e}")
