@@ -10,7 +10,7 @@ from backend.state import BackendRequest
 from driftpy.drift_user import DriftUser 
 from driftpy.user_map.user_map import UserMap # Assuming UserMap is accessible
 from driftpy.types import PerpPosition, UserAccount, is_variant, OraclePriceData # Added OraclePriceData
-from driftpy.constants.numeric_constants import PRICE_PRECISION, MARGIN_PRECISION, BASE_PRECISION # Added BASE_PRECISION
+from driftpy.constants.numeric_constants import PRICE_PRECISION, MARGIN_PRECISION, BASE_PRECISION, QUOTE_PRECISION # Added QUOTE_PRECISION
 from driftpy.constants.perp_markets import mainnet_perp_market_configs # Added mainnet_perp_market_configs
 from driftpy.pickle.vat import Vat # Added Vat for type hinting
 from driftpy.math.margin import MarginCategory # Added MarginCategory
@@ -24,6 +24,10 @@ router = APIRouter()
 
 # Decimals for perp market base asset amount
 PERP_DECIMALS = 9
+# Slot inactivity threshold for considering a user bootable (approx 10 minutes)
+SLOT_INACTIVITY_THRESHOLD = 9000
+# Optional: Leverage threshold for booting (e.g., 25x)
+# BOOT_LEVERAGE_THRESHOLD = 25 # Not strictly implementing this yet, focusing on inactivity
 
 class HighLeverageStats(BaseModel):
     slot: int # Added slot field
@@ -42,6 +46,16 @@ class HighLeveragePositionDetail(BaseModel):
     account_leverage: float # Renamed from leverage
     position_leverage: float # Added position-specific leverage
 
+class BootableUserDetails(BaseModel):
+    user_public_key: str
+    authority: str
+    account_leverage: float
+    activity_staleness_slots: int
+    last_active_slot: int
+    initial_margin_requirement_usd: float
+    total_collateral_usd: float
+    health_percent: int # User's health percentage
+
 @router.get("/stats", response_model=HighLeverageStats)
 async def get_high_leverage_stats(request: BackendRequest):
     """
@@ -49,31 +63,27 @@ async def get_high_leverage_stats(request: BackendRequest):
     - Total spots: Maximum users allowed in high leverage mode (hardcoded).
     - Opted-in spots: Users currently opted into high leverage mode.
     - Available spots: Spots remaining for users to opt-in.
-    - Bootable spots: Users opted-in but not actively using high leverage (no significant perp positions).
+    - Bootable spots: Users opted-in, inactive for a defined period, and potentially with low overall leverage.
     """
     
-    total_spots = 200  # Hardcoded as per user request
+    total_spots = 400  # Hardcoded maximum number of spots
 
     opted_in_users_count = 0
     bootable_count = 0
     
-    # --- Get Slot --- 
-    # Use getattr for safer access, default to 0 or handle appropriately if slot is critical
-    slot = getattr(request.state.backend_state, 'last_oracle_slot', 0) 
-    if slot == 0:
-        logger.warning("Could not retrieve last_oracle_slot from backend state.")
-        # Decide how to handle missing slot: raise error, return default, etc.
-        # For now, it will return 0 as the slot.
+    current_slot = getattr(request.state.backend_state, 'last_oracle_slot', 0) 
+    if current_slot == 0:
+        logger.warning("Could not retrieve current_slot (last_oracle_slot) from backend state for /stats. Bootable check might be inaccurate.")
+        # If current_slot is critical for bootable check, might return error or default.
+        # For now, proceeding will mean inactivity check can't be reliably performed if current_slot is 0.
 
-    # --- Access UserMap --- 
     user_map: Optional[UserMap] = getattr(request.state.backend_state, 'user_map', None)
     logger.info(f"UserMap object type from state: {type(user_map)}")
 
     if not user_map or not hasattr(user_map, 'values'):
         logger.warning("UserMap not found or invalid in backend state. Returning default stats.")
-        # Return default values, including the fetched slot (which might be 0)
         return HighLeverageStats(
-            slot=slot, 
+            slot=current_slot, 
             total_spots=total_spots,
             available_spots=total_spots, 
             bootable_spots=0,
@@ -86,13 +96,13 @@ async def get_high_leverage_stats(request: BackendRequest):
         
         if not user_values:
              logger.info("UserMap is empty for /stats.")
-        else:
-             logger.info(f"First user object type for /stats: {type(user_values[0])}")
+        # else: # Logging first user type can be verbose, let's assume it's DriftUser by now
+             # logger.info(f"First user object type for /stats: {type(user_values[0])}")
 
     except Exception as e:
         logger.error(f"Error getting users from UserMap for /stats: {e}", exc_info=True)
         return HighLeverageStats(
-            slot=slot,
+            slot=current_slot,
             total_spots=total_spots,
             available_spots=total_spots, 
             bootable_spots=0,
@@ -105,37 +115,47 @@ async def get_high_leverage_stats(request: BackendRequest):
              continue
 
         is_high_leverage = False
+        user_account: Optional[UserAccount] = None # Define here for broader scope
         try:
             is_high_leverage = user.is_high_leverage_mode()
+            if is_high_leverage:
+                user_account = user.get_user_account()
         except Exception as e:
-            logger.error(f"Error checking high leverage status for user {user.user_public_key} in /stats: {e}", exc_info=True)
+            logger.error(f"Error checking high leverage status or getting account for user {user.user_public_key} in /stats: {e}", exc_info=True)
             continue 
 
-        if is_high_leverage:
+        if is_high_leverage and user_account:
             opted_in_users_count += 1
             
-            has_open_perp_positions = False
-            try:
-                user_account: UserAccount = user.get_user_account() 
-                perp_positions: list[PerpPosition] = user_account.perp_positions
-                
-                for position in perp_positions:
-                    if position.base_asset_amount != 0:
-                        has_open_perp_positions = True
-                        break 
-            except Exception as e:
-                 logger.error(f"Error checking positions for user {user.user_public_key} in /stats: {e}", exc_info=True)
-                 has_open_perp_positions = True 
+            # Check for bootable status based on inactivity
+            is_inactive = False
+            if current_slot > 0: # Ensure current_slot is valid before checking inactivity
+                try:
+                    last_active_slot = user_account.last_active_slot # This is a int/BN
+                    # Ensure last_active_slot can be converted to int if it's a BN or similar type
+                    last_active_slot_int = int(str(last_active_slot)) 
+                    if (current_slot - last_active_slot_int) > SLOT_INACTIVITY_THRESHOLD:
+                        is_inactive = True
+                        logger.debug(f"User {user.user_public_key} is inactive. Current: {current_slot}, Last Active: {last_active_slot_int}, Diff: {current_slot - last_active_slot_int}")
+                except Exception as slot_check_e:
+                    logger.error(f"Error checking inactivity for user {user.user_public_key}: {slot_check_e}", exc_info=True)
+                    # Decide behavior: treat as not inactive, or skip bootable check for this user
             
-            if not has_open_perp_positions:
+            # The bot script uses inactivity and a general low leverage threshold.
+            # For simplicity and alignment with bot, we use inactivity as the primary signal.
+            # A stricter check could verify no *significant* positions or overall low leverage.
+            if is_inactive:
+                # Optionally, add the leverage check here if desired for stricter booting criteria:
+                # current_leverage_ui = user.get_leverage() / MARGIN_PRECISION
+                # if current_leverage_ui < BOOT_LEVERAGE_THRESHOLD:
+                #     bootable_count += 1
                 bootable_count += 1
 
     available_spots = total_spots - opted_in_users_count
-    logger.info(f"Calculated Stats for /stats: Slot={slot}, Total={total_spots}, OptedIn={opted_in_users_count}, Available={available_spots}, Bootable={bootable_count}")
+    logger.info(f"Calculated Stats for /stats: Slot={current_slot}, Total={total_spots}, OptedIn={opted_in_users_count}, Available={available_spots}, Bootable={bootable_count}")
 
-    # Include slot in the returned object
     return HighLeverageStats(
-        slot=slot, 
+        slot=current_slot, 
         total_spots=total_spots,
         available_spots=available_spots,
         bootable_spots=bootable_count,
@@ -252,8 +272,74 @@ async def get_high_leverage_positions_detailed(request: BackendRequest):
     logger.info(f"Returning {len(detailed_hl_positions)} high leverage positions.")
     return detailed_hl_positions
 
+@router.get("/bootable-users", response_model=List[BootableUserDetails])
+async def get_bootable_user_details(request: BackendRequest):
+    """
+    Returns detailed information for users who are in high leverage mode and deemed bootable due to inactivity.
+    """
+    bootable_users_list: List[BootableUserDetails] = []
 
-# Example of how to include this router in a main FastAPI app:
-# from fastapi import FastAPI
-# app = FastAPI()
-# app.include_router(router, prefix="/high-leverage", tags=["High Leverage"])
+    current_slot = getattr(request.state.backend_state, 'last_oracle_slot', 0)
+    user_map: Optional[UserMap] = getattr(request.state.backend_state, 'user_map', None)
+
+    logger.info(f"Fetching bootable users details. Current slot: {current_slot}")
+
+    if current_slot == 0:
+        logger.warning("Current slot is 0, cannot accurately determine bootable users by inactivity. Returning empty list.")
+        return []
+    
+    if not user_map or not hasattr(user_map, 'values'):
+        logger.warning("UserMap not found or invalid in backend state. Returning empty list for /bootable-users.")
+        return []
+
+    try:
+        user_values = list(user_map.values())
+        logger.info(f"Processing {len(user_values)} users from UserMap for /bootable-users.")
+    except Exception as e:
+        logger.error(f"Error getting users from UserMap for /bootable-users: {e}", exc_info=True)
+        return []
+
+    for user in user_values:
+        if not isinstance(user, DriftUser):
+            logger.warning(f"Skipping item, expected DriftUser, got {type(user)}")
+            continue
+        
+        user_account: Optional[UserAccount] = None
+        try:
+            if user.is_high_leverage_mode():
+                user_account = user.get_user_account()
+                if not user_account:
+                    logger.warning(f"User {user.user_public_key} is high leverage but failed to get user_account. Skipping.")
+                    continue
+
+                last_active_slot_int = int(str(user_account.last_active_slot))
+                activity_staleness_slots = current_slot - last_active_slot_int
+
+                if activity_staleness_slots > SLOT_INACTIVITY_THRESHOLD:
+                    logger.debug(f"User {user.user_public_key} is bootable. Staleness: {activity_staleness_slots} slots.")
+                    
+                    account_leverage_ui = user.get_leverage() / MARGIN_PRECISION
+                    initial_margin_req_usd = user.get_margin_requirement(MarginCategory.INITIAL) / QUOTE_PRECISION
+                    total_collateral_usd = user.get_total_collateral(MarginCategory.INITIAL) / QUOTE_PRECISION
+                    health_percent = user.get_health()
+                    user_public_key_str = str(user.user_public_key)
+                    authority_str = str(user_account.authority)
+
+                    bootable_users_list.append(
+                        BootableUserDetails(
+                            user_public_key=user_public_key_str,
+                            authority=authority_str,
+                            account_leverage=account_leverage_ui,
+                            activity_staleness_slots=activity_staleness_slots,
+                            last_active_slot=last_active_slot_int,
+                            initial_margin_requirement_usd=initial_margin_req_usd,
+                            total_collateral_usd=total_collateral_usd,
+                            health_percent=health_percent,
+                        )
+                    )
+        except Exception as user_proc_e:
+            logger.error(f"Error processing user {getattr(user, 'user_public_key', 'UNKNOWN')} for /bootable-users: {user_proc_e}", exc_info=True)
+            continue
+            
+    logger.info(f"Found {len(bootable_users_list)} bootable users.")
+    return bootable_users_list
