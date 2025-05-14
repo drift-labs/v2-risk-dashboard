@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from backend.state import BackendRequest
 
 # Drift imports - adjust paths/names if necessary based on project structure
+from driftpy.drift_client import DriftClient  # For interacting with the Drift program
+from driftpy.addresses import get_high_leverage_mode_config_public_key # To get the PDA for config
 from driftpy.drift_user import DriftUser 
 from driftpy.user_map.user_map import UserMap # Assuming UserMap is accessible
 from driftpy.types import PerpPosition, UserAccount, is_variant, OraclePriceData # Added OraclePriceData
@@ -60,106 +62,110 @@ class BootableUserDetails(BaseModel):
 async def get_high_leverage_stats(request: BackendRequest):
     """
     Provides statistics about high leverage usage on the Drift protocol.
-    - Total spots: Maximum users allowed in high leverage mode (hardcoded).
+    - Total spots: Maximum users allowed in high leverage mode.
     - Opted-in spots: Users currently opted into high leverage mode.
     - Available spots: Spots remaining for users to opt-in.
-    - Bootable spots: Users opted-in, inactive for a defined period, and potentially with low overall leverage.
+    - Bootable spots: Users opted-in, inactive for a defined period.
     """
     
-    total_spots = 400  # Hardcoded maximum number of spots
-
-    opted_in_users_count = 0
+    # Initialize with fallback values
+    total_spots = 100  # Fallback, will be updated from on-chain if possible
+    opted_in_users_count = 0 # Fallback, will be updated from on-chain if possible
     bootable_count = 0
     
-    current_slot = getattr(request.state.backend_state, 'last_oracle_slot', 0) 
-    if current_slot == 0:
-        logger.warning("Could not retrieve current_slot (last_oracle_slot) from backend state for /stats. Bootable check might be inaccurate.")
-        # If current_slot is critical for bootable check, might return error or default.
-        # For now, proceeding will mean inactivity check can't be reliably performed if current_slot is 0.
+    current_slot = getattr(request.state.backend_state, 'last_oracle_slot', 0)
+    config_account = None # To track if on-chain data was fetched
 
+    # Fetching On-Chain Data for total_spots and opted_in_users_count
+    drift_client: Optional[DriftClient] = getattr(request.state.backend_state, 'dc', None)
+
+    if drift_client:
+        try:
+            high_leverage_mode_config_pda = get_high_leverage_mode_config_public_key(
+                drift_client.program_id
+            )
+            config_account = await drift_client.program.account["HighLeverageModeConfig"].fetch(
+                high_leverage_mode_config_pda
+            )
+            total_spots = config_account.max_users
+            opted_in_users_count = config_account.current_users
+            logger.info(f"Successfully fetched HighLeverageModeConfig: max_users={total_spots}, current_users={opted_in_users_count}")
+        except Exception as e:
+            logger.error(f"Error fetching HighLeverageModeConfig from on-chain: {e}. Using fallback values for total and opted-in spots.", exc_info=True)
+            # Fallback values initialized earlier will be used.
+    else:
+        logger.warning("DriftClient (as 'dc') not found in backend state. Using fallback values for total and opted-in spots.")
+        # Fallback values initialized earlier will be used.
+
+    # Calculating bootable_count (UserMap Iteration)
     user_map: Optional[UserMap] = getattr(request.state.backend_state, 'user_map', None)
-    logger.info(f"UserMap object type from state: {type(user_map)}")
 
     if not user_map or not hasattr(user_map, 'values'):
-        logger.warning("UserMap not found or invalid in backend state. Returning default stats.")
-        return HighLeverageStats(
-            slot=current_slot, 
-            total_spots=total_spots,
-            available_spots=total_spots, 
-            bootable_spots=0,
-            opted_in_spots=0
-        )
-        
-    try:
-        user_values = list(user_map.values()) 
-        logger.info(f"Processing {len(user_values)} users from UserMap for /stats.")
-        
-        if not user_values:
-             logger.info("UserMap is empty for /stats.")
-        # else: # Logging first user type can be verbose, let's assume it's DriftUser by now
-             # logger.info(f"First user object type for /stats: {type(user_values[0])}")
+        logger.warning("UserMap not found or invalid in backend state. Bootable spots count will be 0.")
+        # opted_in_users_count is already set (from on-chain or fallback)
+        # bootable_count remains 0
+    else:
+        if current_slot == 0:
+            logger.warning("Could not retrieve current_slot (last_oracle_slot) from backend state for bootable check. Bootable count might be inaccurate (0).")
+            # bootable_count remains 0 if current_slot is unavailable for inactivity check
+        else:
+            try:
+                user_values = list(user_map.values()) 
+                logger.info(f"Processing {len(user_values)} users from UserMap for bootable status calculation.")
+                
+                for user in user_values:
+                    if not isinstance(user, DriftUser):
+                        logger.warning(f"Skipping item in user_map values for bootable calc, expected DriftUser, got {type(user)}")
+                        continue
 
-    except Exception as e:
-        logger.error(f"Error getting users from UserMap for /stats: {e}", exc_info=True)
-        return HighLeverageStats(
-            slot=current_slot,
-            total_spots=total_spots,
-            available_spots=total_spots, 
-            bootable_spots=0,
-            opted_in_spots=0
-        )
+                    is_high_leverage = False
+                    user_account: Optional[UserAccount] = None
+                    try:
+                        is_high_leverage = user.is_high_leverage_mode()
+                        if is_high_leverage: # Only proceed if user is in high leverage mode
+                            user_account = user.get_user_account()
+                    except Exception as e:
+                        logger.error(f"Error checking high leverage status or getting account for user {user.user_public_key} in bootable calc: {e}", exc_info=True)
+                        continue 
 
-    for user in user_values:
-        if not isinstance(user, DriftUser):
-             logger.warning(f"Skipping item in user_map values for /stats, expected DriftUser, got {type(user)}")
-             continue
+                    if is_high_leverage and user_account:
+                        # DO NOT increment opted_in_users_count here.
+                        
+                        is_inactive = False
+                        # current_slot validity is already checked before this loop
+                        try:
+                            last_active_slot = user_account.last_active_slot
+                            last_active_slot_int = int(str(last_active_slot)) 
+                            if (current_slot - last_active_slot_int) > SLOT_INACTIVITY_THRESHOLD:
+                                is_inactive = True
+                                logger.debug(f"User {user.user_public_key} is inactive for bootable check. Current: {current_slot}, Last Active: {last_active_slot_int}, Diff: {current_slot - last_active_slot_int}")
+                        except Exception as slot_check_e:
+                            logger.error(f"Error checking inactivity for user {user.user_public_key} (bootable calc): {slot_check_e}", exc_info=True)
+                        
+                        if is_inactive:
+                            bootable_count += 1
+            except Exception as e:
+                logger.error(f"Error getting or processing users from UserMap for bootable calculation: {e}", exc_info=True)
+                # bootable_count remains as it was before the try block or 0 if it's the first error.
 
-        is_high_leverage = False
-        user_account: Optional[UserAccount] = None # Define here for broader scope
-        try:
-            is_high_leverage = user.is_high_leverage_mode()
-            if is_high_leverage:
-                user_account = user.get_user_account()
-        except Exception as e:
-            logger.error(f"Error checking high leverage status or getting account for user {user.user_public_key} in /stats: {e}", exc_info=True)
-            continue 
-
-        if is_high_leverage and user_account:
-            opted_in_users_count += 1
-            
-            # Check for bootable status based on inactivity
-            is_inactive = False
-            if current_slot > 0: # Ensure current_slot is valid before checking inactivity
-                try:
-                    last_active_slot = user_account.last_active_slot # This is a int/BN
-                    # Ensure last_active_slot can be converted to int if it's a BN or similar type
-                    last_active_slot_int = int(str(last_active_slot)) 
-                    if (current_slot - last_active_slot_int) > SLOT_INACTIVITY_THRESHOLD:
-                        is_inactive = True
-                        logger.debug(f"User {user.user_public_key} is inactive. Current: {current_slot}, Last Active: {last_active_slot_int}, Diff: {current_slot - last_active_slot_int}")
-                except Exception as slot_check_e:
-                    logger.error(f"Error checking inactivity for user {user.user_public_key}: {slot_check_e}", exc_info=True)
-                    # Decide behavior: treat as not inactive, or skip bootable check for this user
-            
-            # The bot script uses inactivity and a general low leverage threshold.
-            # For simplicity and alignment with bot, we use inactivity as the primary signal.
-            # A stricter check could verify no *significant* positions or overall low leverage.
-            if is_inactive:
-                # Optionally, add the leverage check here if desired for stricter booting criteria:
-                # current_leverage_ui = user.get_leverage() / MARGIN_PRECISION
-                # if current_leverage_ui < BOOT_LEVERAGE_THRESHOLD:
-                #     bootable_count += 1
-                bootable_count += 1
-
+    # Calculating available_spots
     available_spots = total_spots - opted_in_users_count
-    logger.info(f"Calculated Stats for /stats: Slot={current_slot}, Total={total_spots}, OptedIn={opted_in_users_count}, Available={available_spots}, Bootable={bootable_count}")
+    available_spots = max(0, available_spots) # Ensure not negative
+
+    logger.info(
+        f"Calculated Stats for /stats: Slot={current_slot}, "
+        f"Total={total_spots} (Source: {'On-chain' if config_account else 'Fallback'}), "
+        f"OptedIn={opted_in_users_count} (Source: {'On-chain' if config_account else 'Fallback'}), "
+        f"Available={available_spots}, "
+        f"Bootable={bootable_count} (Source: UserMap)"
+    )
 
     return HighLeverageStats(
         slot=current_slot, 
         total_spots=total_spots,
         available_spots=available_spots,
         bootable_spots=bootable_count,
-        opted_in_spots=opted_in_users_count
+        opted_in_spots=opted_in_users_count # This matches the model field name
     )
 
 @router.get("/positions/detailed", response_model=List[HighLeveragePositionDetail])
@@ -194,6 +200,9 @@ async def get_high_leverage_positions_detailed(request: BackendRequest):
         
         try:
             if user.is_high_leverage_mode():
+                high_leverage_count = getattr(request.state.backend_state, 'high_leverage_count', 0) + 1
+                setattr(request.state.backend_state, 'high_leverage_count', high_leverage_count)
+                logger.info(f"Found high leverage mode user: {user.user_public_key} (Total: {high_leverage_count})")
                 user_account: UserAccount = user.get_user_account()
                 user_public_key_str = str(user.user_public_key)
                 authority_str = str(user_account.authority)

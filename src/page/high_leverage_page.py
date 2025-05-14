@@ -66,15 +66,15 @@ def high_leverage_page():
         # positions_data = result_positions.get("data", []) if isinstance(result_positions, dict) else []
 
         # --- 5. Display Slot Info --- 
-        current_slot = get_current_slot()
-        if slot != "N/A" and current_slot:
-            try:
-                slot_age = int(current_slot) - int(slot)
-                st.info(f"Displaying data for slot {slot} (age: {slot_age} slots)")
-            except (ValueError, TypeError):
-                st.info(f"Displaying data for slot {slot}. Current slot: {current_slot}")
-        else:
-            st.info(f"Slot information unavailable. Current slot: {current_slot}")
+        # current_slot = get_current_slot()
+        # if slot != "N/A" and current_slot:
+        #     try:
+        #         slot_age = int(current_slot) - int(slot)
+        #         st.info(f"Displaying data for slot {slot} (age: {slot_age} slots)")
+        #     except (ValueError, TypeError):
+        #         st.info(f"Displaying data for slot {slot}. Current slot: {current_slot}")
+        # else:
+        #     st.info(f"Slot information unavailable. Current slot: {current_slot}")
 
         # --- 6. Prepare Positions DataFrame --- 
         df_positions = pd.DataFrame()
@@ -131,6 +131,17 @@ def high_leverage_page():
         cols[1].metric("Opted-In Users", stats_data.get('opted_in_spots', 'N/A'))
         cols[2].metric("Available Spots", stats_data.get('available_spots', 'N/A'))
         cols[3].metric("Bootable Spots (Inactive)", stats_data.get('bootable_spots', 'N/A')) # Updated label
+
+        # --- Slot Info (Moved) --- 
+        current_slot = get_current_slot()
+        if slot != "N/A" and current_slot:
+            try:
+                slot_age = int(current_slot) - int(slot)
+                st.info(f"Below data for slot {slot} (age: {slot_age} slots)")
+            except (ValueError, TypeError):
+                st.info(f"Below data for slot {slot}. Current slot: {current_slot}")
+        else:
+            st.info(f"Slot information unavailable. Current slot: {current_slot}")
 
         st.subheader("Detailed High Leverage Positions")
         if not display_df.empty:
