@@ -101,7 +101,7 @@ def high_leverage_page():
                     df_positions['Account Leverage'] = pd.to_numeric(df_positions['Account Leverage'], errors='coerce')
 
                     # Default sort by Position Leverage (descending)
-                    df_positions = df_positions.sort_values(by='Position Leverage', ascending=False)
+                    df_positions = df_positions.sort_values(by='Account Leverage', ascending=False)
                     
                     # Select and order columns for display
                     display_df = df_positions[[
