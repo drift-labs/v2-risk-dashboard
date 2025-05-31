@@ -23,6 +23,7 @@ from page.welcome import welcome_page
 from page.market_recommender_page import market_recommender_page
 from page.open_interest_page import open_interest_page
 from page.high_leverage_page import high_leverage_page
+from page.user_retention_page import user_retention_page
 
 load_dotenv()
 
@@ -148,6 +149,12 @@ if __name__ == "__main__":
             url_path="high-leverage",
             title="High Leverage",
             icon="⚡",
+        ),
+        st.Page(
+            needs_backend(user_retention_page),
+            url_path="user-retention",
+            title="User Retention",
+            icon="👥",
         ),
     ]
 
