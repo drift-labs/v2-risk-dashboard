@@ -40,6 +40,7 @@ def price_shock_cached_page():
     params = st.query_params
     asset_group = params.get("asset_group", PriceShockAssetGroup.IGNORE_STABLES.value)
     n_scenarios_param = params.get("n_scenarios", 5)
+    pool_id_param = params.get("pool_id", "all")
 
     asset_groups = [
         PriceShockAssetGroup.IGNORE_STABLES.value,
@@ -61,19 +62,58 @@ def price_shock_cached_page():
     n_scenarios = radio
 
     st.query_params.update({"n_scenarios": n_scenarios})
+    
+    # Pool ID selection
+    pool_options = ["all", "0", "1", "3"]
+    pool_display_names = ["All Pools", "Main Pool (0)", "Isolated Pool 1", "Isolated Pool 3"]
+    
+    try:
+        pool_index = pool_options.index(str(pool_id_param))
+    except ValueError:
+        pool_index = 0  # Default to "all"
+    
+    pool_selection = st.selectbox(
+        "Pool Filter", 
+        pool_display_names,
+        index=pool_index,
+        help="Filter positions by pool ID. Main Pool (0) has more lenient parameters, Isolated Pools (>0) have stricter risk parameters."
+    )
+    
+    # Map display name back to value
+    selected_pool_id = pool_options[pool_display_names.index(pool_selection)]
+    st.query_params.update({"pool_id": selected_pool_id})
+    
     if n_scenarios == 5:
         oracle_distort = 0.05
     else:
         oracle_distort = 0.1
+        
+    # Prepare API parameters
+    api_params = {
+        "asset_group": asset_group,
+        "oracle_distortion": oracle_distort,
+        "n_scenarios": n_scenarios,
+    }
+    
+    # Add pool_id to params if not "all"
+    if selected_pool_id != "all":
+        api_params["pool_id"] = int(selected_pool_id)
+    
+    # Create cache key that includes pool_id
+    cache_key_parts = [
+        "price-shock/usermap",
+        asset_group,
+        str(oracle_distort),
+        str(n_scenarios),
+        selected_pool_id
+    ]
+    cache_key = "_".join(cache_key_parts)
+    
     try:
         result = fetch_cached_data(
             "price-shock/usermap",
-            _params={
-                "asset_group": asset_group,
-                "oracle_distortion": oracle_distort,
-                "n_scenarios": n_scenarios,
-            },
-            key=f"price-shock/usermap_{asset_group}_{oracle_distort}_{n_scenarios}",
+            _params=api_params,
+            key=cache_key,
         )
     except Exception as e:
         print("HIT AN EXCEPTION...", e)
@@ -89,8 +129,9 @@ def price_shock_cached_page():
         st.stop()
 
     current_slot = get_current_slot()
+    pool_display = f" (Pool {selected_pool_id})" if selected_pool_id != "all" else " (All Pools)"
     st.info(
-        f"This data is for slot {result['slot']}, which is now {int(current_slot) - int(result['slot'])} slots old"
+        f"This data is for slot {result['slot']}{pool_display}, which is now {int(current_slot) - int(result['slot'])} slots old"
     )
     df_plot = pd.DataFrame(json.loads(result["result"]))
 
