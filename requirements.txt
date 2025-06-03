@@ -6,7 +6,7 @@ numpy==1.26.4
 pandas==2.2.3
 python-dotenv==1.0.1
 pydantic==2.10.6
-solana==0.36.1
+solana==0.36.6
 streamlit==1.42.1
 uvicorn==0.34.0
 requests==2.32.3
