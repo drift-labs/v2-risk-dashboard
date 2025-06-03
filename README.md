@@ -41,3 +41,5 @@ which will start a process to generate the cache files and then start the backen
 ## Deployment
 
 Pushing should automatically build the docker images and deploy to our k8s cluster.
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/drift-labs/driftpy)

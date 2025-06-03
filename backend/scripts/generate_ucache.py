@@ -50,23 +50,33 @@ class PriceShockEndpoint(Endpoint):
     asset_group: PriceShockAssetGroup
     oracle_distortion: float
     n_scenarios: int
+    pool_id: int
 
     def __init__(
         self,
         asset_group: PriceShockAssetGroup,
         oracle_distortion: float,
         n_scenarios: int,
+        pool_id: int = None,
     ):
         self.asset_group = asset_group
         self.oracle_distortion = oracle_distortion
         self.n_scenarios = n_scenarios
+        self.pool_id = pool_id
+        
+        params = {
+            "asset_group": asset_group,
+            "oracle_distortion": oracle_distortion,
+            "n_scenarios": n_scenarios,
+        }
+        
+        # Only add pool_id if it's not None
+        if pool_id is not None:
+            params["pool_id"] = pool_id
+            
         super().__init__(
             "price-shock/usermap",
-            {
-                "asset_group": asset_group,
-                "oracle_distortion": oracle_distortion,
-                "n_scenarios": n_scenarios,
-            },
+            params,
         )
 
 
@@ -99,6 +109,7 @@ async def process_multiple_endpoints(state_pickle_path: str, endpoints: list[End
                     oracle_distortion=query_params["oracle_distortion"],
                     asset_group=query_params["asset_group"],
                     n_scenarios=query_params["n_scenarios"],
+                    pool_id=query_params.get("pool_id"),
                 )
 
             if endpoint == "asset-liability/matrix":
@@ -167,6 +178,7 @@ async def main():
     ps_parser.add_argument("--asset-group", type=str, required=True)
     ps_parser.add_argument("--oracle-distortion", type=float, required=True)
     ps_parser.add_argument("--n-scenarios", type=int, required=True)
+    ps_parser.add_argument("--pool-id", type=int, help="Filter by pool ID (optional)")
 
     args = parser.parse_args()
 
@@ -191,6 +203,7 @@ async def main():
                 asset_group=args.asset_group,
                 oracle_distortion=args.oracle_distortion,
                 n_scenarios=args.n_scenarios,
+                pool_id=getattr(args, 'pool_id', None),
             )
         )
 
@@ -203,3 +216,4 @@ if __name__ == "__main__":
 # Usage example:
 # python -m backend.scripts.generate_ucache --use-snapshot asset-liability --mode 0 --perp-market-index 0
 # python -m backend.scripts.generate_ucache --use-snapshot price-shock --asset-group "ignore+stables" --oracle-distortion 0.05 --n-scenarios 5
+# python -m backend.scripts.generate_ucache --use-snapshot price-shock --asset-group "ignore+stables" --oracle-distortion 0.05 --n-scenarios 5 --pool-id 0

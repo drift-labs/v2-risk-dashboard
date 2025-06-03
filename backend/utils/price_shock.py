@@ -21,6 +21,9 @@ def create_dataframes(leverages):
 
 
 def calculate_spot_bankruptcies(df):
+    if df.empty or 'spot_asset' not in df.columns or 'spot_liability' not in df.columns or 'net_usd_value' not in df.columns:
+        return 0.0
+    
     spot_bankrupt = df[
         (df["spot_asset"] < df["spot_liability"]) & (df["net_usd_value"] < 0)
     ]
@@ -28,6 +31,9 @@ def calculate_spot_bankruptcies(df):
 
 
 def calculate_total_bankruptcies(df):
+    if df.empty or 'net_usd_value' not in df.columns:
+        return 0.0
+    
     return -df[df["net_usd_value"] < 0]["net_usd_value"].sum()
 
 
@@ -46,6 +52,7 @@ def get_price_shock_df(
     oracle_distortion: float,
     asset_group: PriceShockAssetGroup,
     n_scenarios: int,
+    pool_id: int = None,
 ):
     user_leverages = get_user_leverages_for_price_shock(
         slot,
@@ -54,8 +61,35 @@ def get_price_shock_df(
         oracle_distortion,
         asset_group,
         n_scenarios,
+        pool_id,
     )
     levs = user_leverages
+    
+    # Handle case where no users are found after filtering
+    if not levs["user_keys"] or len(levs["leverages_none"]) == 0:
+        print(f"No users found for the specified filters. Returning empty result.")
+        oracle_moves = generate_oracle_moves(n_scenarios, oracle_distortion)
+        
+        # Create empty DataFrame with all zeros
+        df_plot = pd.DataFrame(
+            {
+                "Oracle Move (%)": oracle_moves,
+                "Total Bankruptcy ($)": [0.0] * len(oracle_moves),
+                "Spot Bankruptcy ($)": [0.0] * len(oracle_moves),
+                "Perpetual Bankruptcy ($)": [0.0] * len(oracle_moves),
+            }
+        )
+        
+        df_plot = df_plot.sort_values("Oracle Move (%)")
+        
+        return {
+            "slot": slot,
+            "result": df_plot.to_json(),
+            "distorted_oracles": levs["distorted_oracles"],
+            "oracle_down_max": pd.DataFrame().to_json(),
+            "oracle_up_max": pd.DataFrame().to_json(),
+        }
+    
     dfs = (
         create_dataframes(levs["leverages_down"])
         + [pd.DataFrame(levs["leverages_none"])]

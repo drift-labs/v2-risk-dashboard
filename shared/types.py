@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import TypedDict
+from typing import TypedDict, Optional
 
 
 class PriceShockAssetGroup(Enum):
@@ -11,3 +11,4 @@ class PriceShockParams(TypedDict):
     oracle_distortion: float
     asset_group: PriceShockAssetGroup
     n_scenarios: int
+    pool_id: Optional[int]

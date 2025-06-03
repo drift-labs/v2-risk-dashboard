@@ -260,9 +260,39 @@ def get_user_leverages_for_price_shock(
     oracle_distortion: float = 0.1,
     asset_group: PriceShockAssetGroup = PriceShockAssetGroup.IGNORE_STABLES,
     scenarios: int = 5,
+    pool_id: int = None,
 ):
     user_keys = list(user_map.user_map.keys())
     user_vals = list(user_map.values())
+    
+    # Filter users by pool_id if specified
+    if pool_id is not None:
+        filtered_user_vals = []
+        filtered_user_keys = []
+        pool_id_counts = {}  # Track distribution of pool_ids
+        
+        for user_key, user in zip(user_keys, user_vals):
+            try:
+                user_account = user.get_user_account()
+                actual_pool_id = user_account.pool_id
+                
+                # Track pool_id distribution for debugging
+                pool_id_counts[actual_pool_id] = pool_id_counts.get(actual_pool_id, 0) + 1
+                
+                if actual_pool_id == pool_id:
+                    filtered_user_vals.append(user)
+                    filtered_user_keys.append(user_key)
+            except Exception as e:
+                print(f"Error checking pool_id for user {user_key}: {e}")
+                continue
+        
+        print(f"Pool ID distribution: {dict(sorted(pool_id_counts.items()))}")
+        print(f"Requested pool_id: {pool_id}")
+        print(f"Filtered to {len(filtered_user_vals)} users with pool_id {pool_id} (out of {len(user_vals)} total users)")
+        
+        user_vals = filtered_user_vals
+        user_keys = filtered_user_keys
+    
     all_configs = mainnet_spot_market_configs + mainnet_perp_market_configs
 
     print(f"User keys : {len(user_keys)}")

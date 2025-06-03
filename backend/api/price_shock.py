@@ -15,6 +15,7 @@ async def _get_price_shock(
     oracle_distortion: float = 0.1,
     asset_group: str = PriceShockAssetGroup.IGNORE_STABLES.value,
     n_scenarios: int = 5,
+    pool_id: int = None,
 ) -> dict:
     asset_group = asset_group.replace("+", " ")
     price_shock_asset_group = PriceShockAssetGroup(asset_group)
@@ -26,6 +27,7 @@ async def _get_price_shock(
         oracle_distortion=oracle_distortion,
         asset_group=price_shock_asset_group,
         n_scenarios=n_scenarios,
+        pool_id=pool_id,
     )
 
 
@@ -35,6 +37,7 @@ async def get_price_shock(
     oracle_distortion: float = 0.1,
     asset_group: str = PriceShockAssetGroup.IGNORE_STABLES.value,
     n_scenarios: int = 5,
+    pool_id: int = None,
 ):
     return await _get_price_shock(
         request.state.backend_state.last_oracle_slot,
@@ -43,4 +46,5 @@ async def get_price_shock(
         oracle_distortion,
         asset_group,
         n_scenarios,
+        pool_id,
     )
