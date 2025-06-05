@@ -340,11 +340,34 @@ def market_inspector_page():
         available_attrs = get_perp_market_attributes()
 
     # 3) Let user select which market
-    selected_market = st.selectbox(
+    market_indices = [m.data.market_index for m in markets]
+
+    if not market_indices:
+        st.warning(f"No {market_type_choice} markets available to display.")
+        # Ensure selected_attrs is cleared if no markets are available for the chosen type
+        if "selected_attrs" in st.session_state: # Reset selected attributes if market type changes or no markets
+            st.session_state.selected_attrs = []
+        return # Stop further processing for this render if no markets
+
+    market_lookup = {m.data.market_index: m for m in markets}
+
+    # Use a unique key for the selectbox based on market_type_choice
+    # to ensure it resets if the options change significantly (e.g., switching market types)
+    selectbox_key = f"market_selectbox_{market_type_choice}"
+
+    selected_market_index = st.selectbox(
         "Select Market:",
-        markets,
-        format_func=display_name,
+        market_indices,
+        format_func=lambda index: display_name(market_lookup[index]),
+        key=selectbox_key
     )
+
+    selected_market = market_lookup.get(selected_market_index) # Reassign selected_market
+
+    if not selected_market:
+        # This case should ideally not be hit if market_indices is not empty and selectbox works as expected
+        st.error("Failed to retrieve selected market data. Please ensure a market is selected or try refreshing.")
+        return
 
     # 4) Let user pick which attributes to show (multi-select)
     st.write("Select which attributes you would like to see:")
@@ -378,18 +401,44 @@ def market_inspector_page():
     # 5) Display results
     if not selected_attrs:
         st.info("Please select at least one attribute to display.")
-        with st.expander("All markets"):
+        with st.expander("All markets (Serialized Data)"): # Clarified title
             st.write("Perp markets:")
-            perp_markets = sorted(perp_market_map.values(), key=lambda m: m.data.market_index)
-            perps = pd.concat([pd.DataFrame(serialize_perp_market(x.data)).T for x in perp_markets], axis=1)
-            perps.columns = [m.data.market_index for m in perp_markets]
-            st.write(perps)
+            perp_markets_list = sorted(perp_market_map.values(), key=lambda m: m.data.market_index)
+            if perp_markets_list:
+                try:
+                    perp_data_for_df = [serialize_perp_market(m.data) for m in perp_markets_list]
+                    if perp_data_for_df: # Ensure list is not empty before concat
+                        df_perp = pd.concat(perp_data_for_df, axis=0).reset_index(drop=True)
+                        if 'market_index' in df_perp.columns:
+                            # Ensure market_index is the first column for better readability
+                            df_perp = df_perp[['market_index'] + [col for col in df_perp.columns if col != 'market_index']]
+                        st.dataframe(df_perp)
+                    else:
+                        st.write("No data to display for perp markets.")                        
+                except Exception as e:
+                    st.error(f"Error displaying perp markets table: {e}")
+                    st.caption("Raw data might contain non-serializable fields or other issues.")
+            else:
+                st.write("No perp markets found.")
 
             st.write("Spot markets:")
-            spot_markets = sorted(spot_market_map.values(), key=lambda m: m.data.market_index)
-            spots = pd.concat([pd.DataFrame(serialize_spot_market(x.data)).T for x in spot_markets], axis=1)
-            spots.columns = [m.data.market_index for m in spot_markets]
-            st.write(spots)
+            spot_markets_list = sorted(spot_market_map.values(), key=lambda m: m.data.market_index)
+            if spot_markets_list:
+                try:
+                    spot_data_for_df = [serialize_spot_market(m.data) for m in spot_markets_list]
+                    if spot_data_for_df: # Ensure list is not empty before concat
+                        df_spot = pd.concat(spot_data_for_df, axis=0).reset_index(drop=True)
+                        if 'market_index' in df_spot.columns:
+                            # Ensure market_index is the first column for better readability
+                            df_spot = df_spot[['market_index'] + [col for col in df_spot.columns if col != 'market_index']]
+                        st.dataframe(df_spot)
+                    else:
+                        st.write("No data to display for spot markets.")
+                except Exception as e:
+                    st.error(f"Error displaying spot markets table: {e}")
+                    st.caption("Raw data might contain non-serializable fields or other issues.")
+            else:
+                st.write("No spot markets found.")
         return
 
     st.write(f"**Market Index:** {selected_market.data.market_index}")
@@ -440,8 +489,42 @@ def market_inspector_page():
             # Wrap in code block
             st.markdown(f"```\n{formatted_line}\n```")
 
-    with st.expander("All markets"):
+    with st.expander("All markets (Serialized Data)"): # Clarified title and reused logic
         st.write("Perp markets:")
-        st.write(pd.DataFrame(sorted(perp_market_map.values(), key=lambda m: m.data.market_index)))
+        # Use a different variable name to avoid conflicts if any part of the script is re-run in a weird way
+        perp_markets_list_bottom = sorted(perp_market_map.values(), key=lambda m: m.data.market_index)
+        if perp_markets_list_bottom:
+            try:
+                perp_data_for_df_bottom = [serialize_perp_market(m.data) for m in perp_markets_list_bottom]
+                if perp_data_for_df_bottom: # Ensure list is not empty before concat
+                    df_perp_bottom = pd.concat(perp_data_for_df_bottom, axis=0).reset_index(drop=True)
+                    if 'market_index' in df_perp_bottom.columns:
+                        # Ensure market_index is the first column
+                        df_perp_bottom = df_perp_bottom[['market_index'] + [col for col in df_perp_bottom.columns if col != 'market_index']]
+                    st.dataframe(df_perp_bottom)
+                else:
+                    st.write("No data to display for perp markets.")
+            except Exception as e:
+                st.error(f"Error displaying perp markets table (bottom): {e}")
+                st.caption("Raw data might contain non-serializable fields or other issues.")
+        else:
+            st.write("No perp markets found.")
+
         st.write("Spot markets:")
-        st.write(pd.DataFrame(sorted(spot_market_map.values(), key=lambda m: m.data.market_index)))
+        spot_markets_list_bottom = sorted(spot_market_map.values(), key=lambda m: m.data.market_index)
+        if spot_markets_list_bottom:
+            try:
+                spot_data_for_df_bottom = [serialize_spot_market(m.data) for m in spot_markets_list_bottom]
+                if spot_data_for_df_bottom: # Ensure list is not empty before concat
+                    df_spot_bottom = pd.concat(spot_data_for_df_bottom, axis=0).reset_index(drop=True)
+                    if 'market_index' in df_spot_bottom.columns:
+                        # Ensure market_index is the first column
+                        df_spot_bottom = df_spot_bottom[['market_index'] + [col for col in df_spot_bottom.columns if col != 'market_index']]
+                    st.dataframe(df_spot_bottom)
+                else:
+                    st.write("No data to display for spot markets.")
+            except Exception as e:
+                st.error(f"Error displaying spot markets table (bottom): {e}")
+                st.caption("Raw data might contain non-serializable fields or other issues.")
+        else:
+            st.write("No spot markets found.")
