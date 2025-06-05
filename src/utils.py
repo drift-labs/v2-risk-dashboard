@@ -1,7 +1,8 @@
 import datetime
 import os
-from typing import Optional
+from typing import Optional, Any, Union
 import pandas as pd
+import copy # Added for deepcopy
 
 import requests
 from driftpy.decode.utils import decode_name
@@ -19,9 +20,36 @@ from driftpy.user_map.user_map_config import (
     WebsocketConfig as UserMapWebsocketConfig,
 )
 from driftpy.user_map.userstats_map import UserStatsMap
+from solders.pubkey import Pubkey # Import Pubkey
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Helper function to stringify sumtypes, Pubkeys, and other problematic types
+def _stringify_value(value: Any) -> Any:
+    if hasattr(value, 'kind') and isinstance(value.kind, str):
+        # Common pattern for driftpy sumtypes (e.g., MarketType, OracleSource)
+        return value.kind
+    elif (hasattr(value, '__class__') and
+          hasattr(value.__class__, '__module__') and
+          'sumtypes' in value.__class__.__module__):
+        # Another pattern for sumtypes (e.g., MarketStatus)
+        return value.__class__.__name__
+    elif isinstance(value, Pubkey):
+        return str(value)
+    elif isinstance(value, list):
+        return [_stringify_value(item) for item in value]
+    elif isinstance(value, dict):
+        return {k: _stringify_value(v) for k, v in value.items()}
+    # Add other specific type checks if needed, e.g., for specific complex objects
+    # that are not sumtypes but still cause issues with Arrow.
+    return value
+
+def _prepare_for_serialization(obj_dict: dict) -> dict:
+    prepared_dict = {}
+    for key, value in obj_dict.items():
+        prepared_dict[key] = _stringify_value(value)
+    return prepared_dict
 
 def to_financial(num):
     num_str = str(num)
@@ -260,61 +288,94 @@ def human_amm_df(df):
 
 
 def serialize_perp_market(market: PerpMarketAccount):
+    # Prepare market data by stringifying sumtypes and Pubkeys
+    market_dict_prepared = _prepare_for_serialization(copy.deepcopy(market.__dict__))
+    amm_dict_prepared = _prepare_for_serialization(copy.deepcopy(market.amm.__dict__))
+    hist_oracle_data_prepared = _prepare_for_serialization(copy.deepcopy(market.amm.historical_oracle_data.__dict__))
+    fee_pool_prepared = _prepare_for_serialization(copy.deepcopy(market.amm.fee_pool.__dict__))
+    insurance_claim_prepared = _prepare_for_serialization(copy.deepcopy(market.insurance_claim.__dict__))
+    pnl_pool_prepared = _prepare_for_serialization(copy.deepcopy(market.pnl_pool.__dict__))
 
-    market_df = pd.json_normalize(market.__dict__).drop(['amm', 'insurance_claim', 'pnl_pool'],axis=1).pipe(human_market_df)
-    market_df['pubkey'] = str(market.pubkey)
-    market_df['name'] = decode_name(market.name)
+    market_df = pd.json_normalize(market_dict_prepared).drop(['amm', 'insurance_claim', 'pnl_pool'],axis=1, errors='ignore').pipe(human_market_df)
+    # 'name' is bytes, decode_name handles it; 'pubkey' is already stringified by _prepare_for_serialization if it was a Pubkey object
+    if 'name' in market_df.columns and market_dict_prepared.get('name'): # Check if name exists before decoding
+         market_df['name'] = decode_name(market_dict_prepared['name']) # Use original bytes for decode_name
     market_df.columns = ['market.'+col for col in market_df.columns]
 
-    amm_df= pd.json_normalize(market.amm.__dict__).drop(['historical_oracle_data', 'fee_pool'],axis=1).pipe(human_amm_df)
+    amm_df= pd.json_normalize(amm_dict_prepared).drop(['historical_oracle_data', 'fee_pool'],axis=1, errors='ignore').pipe(human_amm_df)
     amm_df.columns = ['market.amm.'+col for col in amm_df.columns]
 
-    amm_hist_oracle_df= pd.json_normalize(market.amm.historical_oracle_data.__dict__).pipe(human_amm_df)
+    amm_hist_oracle_df= pd.json_normalize(hist_oracle_data_prepared).pipe(human_amm_df)
     amm_hist_oracle_df.columns = ['market.amm.historical_oracle_data.'+col for col in amm_hist_oracle_df.columns]
 
-    market_amm_pool_df = pd.json_normalize(market.amm.fee_pool.__dict__).pipe(human_amm_df)
+    market_amm_pool_df = pd.json_normalize(fee_pool_prepared).pipe(human_amm_df)
     market_amm_pool_df.columns = ['market.amm.fee_pool.'+col for col in market_amm_pool_df.columns]
 
-    market_if_df = pd.json_normalize(market.insurance_claim.__dict__).pipe(human_market_df)
+    market_if_df = pd.json_normalize(insurance_claim_prepared).pipe(human_market_df)
     market_if_df.columns = ['market.insurance_claim.'+col for col in market_if_df.columns]
 
-    market_pool_df = pd.json_normalize(market.pnl_pool.__dict__).pipe(human_amm_df)
+    market_pool_df = pd.json_normalize(pnl_pool_prepared).pipe(human_amm_df)
     market_pool_df.columns = ['market.pnl_pool.'+col for col in market_pool_df.columns]
 
     result_df = pd.concat([market_df, amm_df, amm_hist_oracle_df, market_amm_pool_df, market_if_df, market_pool_df],axis=1)
+    
+    # Final conversion of object columns to string for Arrow compatibility
+    for col in result_df.columns:
+        if result_df[col].dtype == 'object':
+            try:
+                result_df[col] = result_df[col].astype(str)
+            except Exception:
+                # Fallback if astype(str) fails for any reason on a column
+                result_df[col] = result_df[col].apply(lambda x: str(x) if pd.notnull(x) else x)
     return result_df
 
 
 def serialize_spot_market(spot_market: SpotMarketAccount):
-    spot_market_df = pd.json_normalize(spot_market.__dict__).drop([
+    # Prepare spot_market data
+    spot_market_dict_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.__dict__))
+    insurance_fund_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.insurance_fund.__dict__))
+    hist_oracle_data_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.historical_oracle_data.__dict__))
+    hist_index_data_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.historical_index_data.__dict__))
+    revenue_pool_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.revenue_pool.__dict__))
+    spot_fee_pool_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.spot_fee_pool.__dict__))
+
+    spot_market_df = pd.json_normalize(spot_market_dict_prepared).drop([
         'historical_oracle_data', 'historical_index_data',
-        'insurance_fund', # todo
+        'insurance_fund', 
         'spot_fee_pool', 'revenue_pool'
-        ], axis=1).pipe(human_amm_df)
-    spot_market_df['name'] = decode_name(spot_market.name)
-    spot_market_df['pubkey'] = str(spot_market.pubkey)
-    spot_market_df['oracle'] = str(spot_market.oracle)
-    spot_market_df['mint'] = str(spot_market.mint)
-    spot_market_df['vault'] = str(spot_market.vault)
+        ], axis=1, errors='ignore').pipe(human_amm_df) # Note: using human_amm_df as per original
+    
+    # 'name' is bytes, decode_name handles it. Other Pubkey fields are stringified.
+    if 'name' in spot_market_df.columns and spot_market_dict_prepared.get('name'):
+        spot_market_df['name'] = decode_name(spot_market_dict_prepared['name']) # Use original bytes
 
     spot_market_df.columns = ['spot_market.'+col for col in spot_market_df.columns]
 
-    if_df= pd.json_normalize(spot_market.insurance_fund.__dict__).pipe(human_amm_df)
+    if_df= pd.json_normalize(insurance_fund_prepared).pipe(human_amm_df)
     if_df.columns = ['spot_market.insurance_fund.'+col for col in if_df.columns]
 
-    hist_oracle_df= pd.json_normalize(spot_market.historical_oracle_data.__dict__).pipe(human_amm_df)
+    hist_oracle_df= pd.json_normalize(hist_oracle_data_prepared).pipe(human_amm_df)
     hist_oracle_df.columns = ['spot_market.historical_oracle_data.'+col for col in hist_oracle_df.columns]
 
-    hist_index_df= pd.json_normalize(spot_market.historical_index_data.__dict__).pipe(human_amm_df)
+    hist_index_df= pd.json_normalize(hist_index_data_prepared).pipe(human_amm_df)
     hist_index_df.columns = ['spot_market.historical_index_data.'+col for col in hist_index_df.columns]
 
 
-    market_pool_df = pd.json_normalize(spot_market.revenue_pool.__dict__).pipe(human_amm_df)
+    market_pool_df = pd.json_normalize(revenue_pool_prepared).pipe(human_amm_df)
     market_pool_df.columns = ['spot_market.revenue_pool.'+col for col in market_pool_df.columns]
 
 
-    market_fee_df = pd.json_normalize(spot_market.spot_fee_pool.__dict__).pipe(human_amm_df)
+    market_fee_df = pd.json_normalize(spot_fee_pool_prepared).pipe(human_amm_df)
     market_fee_df.columns = ['spot_market.spot_fee_pool.'+col for col in market_fee_df.columns]
 
     result_df = pd.concat([spot_market_df, if_df, hist_oracle_df, hist_index_df, market_pool_df, market_fee_df],axis=1)
+    
+    # Final conversion of object columns to string for Arrow compatibility
+    for col in result_df.columns:
+        if result_df[col].dtype == 'object':
+            try:
+                result_df[col] = result_df[col].astype(str)
+            except Exception:
+                # Fallback if astype(str) fails for any reason on a column
+                result_df[col] = result_df[col].apply(lambda x: str(x) if pd.notnull(x) else x)
     return result_df
