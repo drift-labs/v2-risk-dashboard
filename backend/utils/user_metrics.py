@@ -308,8 +308,8 @@ def get_user_leverages_for_price_shock(
         new_oracles_dat_down.append({})
 
     distorted_oracles = []
-    cache_up = copy.deepcopy(drift_client.account_subscriber.cache)
-    cache_down = copy.deepcopy(drift_client.account_subscriber.cache)
+    cache_up = copy.copy(drift_client.account_subscriber.cache)
+    cache_down = copy.copy(drift_client.account_subscriber.cache)
 
     for key, val in drift_client.account_subscriber.cache["oracle_price_data"].items():
         for i in range(scenarios):
