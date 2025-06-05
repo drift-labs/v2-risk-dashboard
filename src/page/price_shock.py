@@ -35,77 +35,108 @@ def price_shock_plot(df_plot):
 
     return fig
 
+# Helper to initialize session state for a specific widget
+def initialize_widget_state(param_name, session_state_key, options, default_value, type_converter=None):
+    query_val_str = st.query_params.get(param_name)
+    if query_val_str is not None:
+        try:
+            converted_val = type_converter(query_val_str) if type_converter else query_val_str
+            if converted_val in options:
+                st.session_state[session_state_key] = converted_val
+                return 
+            else: # Invalid value in query param
+                st.session_state[session_state_key] = default_value
+        except (ValueError, TypeError): # Conversion failed
+            st.session_state[session_state_key] = default_value
+    elif session_state_key not in st.session_state:
+        st.session_state[session_state_key] = default_value
+    # If query_val_str is None but session_state_key IS in st.session_state,
+    # it means the user interacted, then maybe removed query param. Let existing session_state value persist.
+
+# Define callbacks (these need to be defined before use in widgets)
+def on_asset_group_change():
+    st.query_params["asset_group"] = st.session_state.selected_asset_group
+
+def on_n_scenarios_change():
+    st.query_params["n_scenarios"] = str(st.session_state.n_scenarios) # query params are strings
+
+def on_pool_id_change():
+    st.query_params["pool_id"] = st.session_state.selected_pool_id
 
 def price_shock_cached_page():
-    params = st.query_params
-    asset_group = params.get("asset_group", PriceShockAssetGroup.IGNORE_STABLES.value)
-    n_scenarios_param = params.get("n_scenarios", 5)
-    pool_id_param = params.get("pool_id", "all")
-
-    asset_groups = [
+    # Define options lists
+    asset_group_options = [
         PriceShockAssetGroup.IGNORE_STABLES.value,
         PriceShockAssetGroup.JLP_ONLY.value,
     ]
-
-    asset_group = st.selectbox(
-        "Asset Group", asset_groups, index=asset_groups.index(asset_group)
-    )
-    st.query_params.update({"asset_group": asset_group})
-
     scenario_options = [5, 10]
-    radio = st.radio(
-        "Scenarios",
-        scenario_options,
-        index=scenario_options.index(int(n_scenarios_param)),
-        key="n_scenarios",
-    )
-    n_scenarios = radio
+    pool_value_options = ["all", "0", "1", "3"]
+    pool_display_names_map = {
+        "all": "All Pools",
+        "0": "Main Pool (0)",
+        "1": "Isolated Pool 1",
+        "3": "Isolated Pool 3"
+    }
 
-    st.query_params.update({"n_scenarios": n_scenarios})
+    # Initialize widget states from query_params or defaults
+    initialize_widget_state("asset_group", "selected_asset_group", asset_group_options, PriceShockAssetGroup.IGNORE_STABLES.value)
+    initialize_widget_state("n_scenarios", "n_scenarios", scenario_options, 5, type_converter=int)
+    initialize_widget_state("pool_id", "selected_pool_id", pool_value_options, "all")
+
+    # Asset Group Selection
+    asset_group = st.selectbox(
+        "Asset Group", 
+        options=asset_group_options, 
+        index=asset_group_options.index(st.session_state.selected_asset_group),
+        key="selected_asset_group",
+        on_change=on_asset_group_change
+    )
+
+    # Scenarios Selection
+    n_scenarios = st.radio(
+        "Scenarios",
+        options=scenario_options,
+        index=scenario_options.index(st.session_state.n_scenarios),
+        key="n_scenarios",
+        on_change=on_n_scenarios_change
+    )
     
     # Pool ID selection
-    pool_options = ["all", "0", "1", "3"]
-    pool_display_names = ["All Pools", "Main Pool (0)", "Isolated Pool 1", "Isolated Pool 3"]
-    
-    try:
-        pool_index = pool_options.index(str(pool_id_param))
-    except ValueError:
-        pool_index = 0  # Default to "all"
-    
-    pool_selection = st.selectbox(
+    def format_pool_id(pool_id_value):
+        return pool_display_names_map.get(pool_id_value, str(pool_id_value))
+
+    selected_pool_id = st.selectbox(
         "Pool Filter", 
-        pool_display_names,
-        index=pool_index,
+        options=pool_value_options,
+        index=pool_value_options.index(st.session_state.selected_pool_id),
+        format_func=format_pool_id,
+        key="selected_pool_id",
+        on_change=on_pool_id_change,
         help="Filter positions by pool ID. Main Pool (0) has more lenient parameters, Isolated Pools (>0) have stricter risk parameters."
     )
     
-    # Map display name back to value
-    selected_pool_id = pool_options[pool_display_names.index(pool_selection)]
-    st.query_params.update({"pool_id": selected_pool_id})
-    
-    if n_scenarios == 5:
+    # Determine oracle_distort based on n_scenarios from session_state
+    if st.session_state.n_scenarios == 5:
         oracle_distort = 0.05
     else:
         oracle_distort = 0.1
         
-    # Prepare API parameters
+    # Prepare API parameters using values from st.session_state
     api_params = {
-        "asset_group": asset_group,
+        "asset_group": st.session_state.selected_asset_group,
         "oracle_distortion": oracle_distort,
-        "n_scenarios": n_scenarios,
+        "n_scenarios": st.session_state.n_scenarios,
     }
     
-    # Add pool_id to params if not "all"
-    if selected_pool_id != "all":
-        api_params["pool_id"] = int(selected_pool_id)
+    if st.session_state.selected_pool_id != "all":
+        api_params["pool_id"] = int(st.session_state.selected_pool_id)
     
-    # Create cache key that includes pool_id
     cache_key_parts = [
         "price-shock/usermap",
-        asset_group,
+        st.session_state.selected_asset_group,
         str(oracle_distort),
-        str(n_scenarios),
-        selected_pool_id
+        str(st.session_state.n_scenarios),
+        st.session_state.selected_pool_id
     ]
     cache_key = "_".join(cache_key_parts)
     
@@ -129,9 +160,10 @@ def price_shock_cached_page():
         st.stop()
 
     current_slot = get_current_slot()
-    pool_display = f" (Pool {selected_pool_id})" if selected_pool_id != "all" else " (All Pools)"
+    # Use selected_pool_id from session_state for display
+    pool_display_text = f" (Pool {st.session_state.selected_pool_id})" if st.session_state.selected_pool_id != "all" else " (All Pools)"
     st.info(
-        f"This data is for slot {result['slot']}{pool_display}, which is now {int(current_slot) - int(result['slot'])} slots old"
+        f"This data is for slot {result['slot']}{pool_display_text}, which is now {int(current_slot) - int(result['slot'])} slots old"
     )
     df_plot = pd.DataFrame(json.loads(result["result"]))
 
