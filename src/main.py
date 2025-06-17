@@ -24,6 +24,7 @@ from page.market_recommender_page import market_recommender_page
 from page.open_interest_page import open_interest_page
 from page.high_leverage_page import high_leverage_page
 from page.user_retention_summary_page import user_retention_summary_page
+from page.user_retention_explorer_page import user_retention_explorer_page
 
 load_dotenv()
 
@@ -155,6 +156,12 @@ if __name__ == "__main__":
             url_path="user-retention-summary",
             title="User Retention Summary",
             icon="👥",
+        ),
+        st.Page(
+            needs_backend(user_retention_explorer_page),
+            url_path="user-retention-explorer",
+            title="User Retention Explorer",
+            icon="🔍",
         ),
     ]
 

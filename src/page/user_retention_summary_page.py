@@ -1,14 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json # For JSON export
-import time # For potential retry delays
 from lib.api import fetch_api_data # Assuming this is your helper for API calls
-
-RETRY_DELAY_SECONDS = 5 # For retrying if API is processing
-
-# Helper function to check if the API result indicates backend processing
-def is_processing(result):
-    return isinstance(result, dict) and result.get("result") == "processing"
 
 # Helper function to check for errors in API result
 def has_error(result):
@@ -30,36 +23,30 @@ def get_error_message(result):
         return str(result["detail"])
     if isinstance(result, dict) and "message" in result:
         return str(result["message"])
-    return "Could not connect or fetch data from the backend."
+    return "Could not connect or fetch data from the backend. The static summary file may be missing or invalid."
 
 @st.cache_data(ttl=300) # Cache data for 5 minutes
 def load_retention_data():
-    """Fetches user retention summary data from the backend API."""
-    data = fetch_api_data(section="user-retention-summary", path="summary", retry=False)
+    """Fetches user retention summary data from the backend API, which reads from a static file."""
+    # Add use_cache=False to bypass the backend's cache middleware for this simple, fast endpoint.
+    data = fetch_api_data(section="user-retention-summary", path="summary", params={"use_cache": False}, retry=False)
     return data
 
 def user_retention_summary_page():
     st.title("User Retention Analysis for All Markets")
 
     st.markdown("""
-    This page displays user retention data for all markets on Drift.
+    This page displays a pre-computed summary of user retention data for all markets on Drift.
     For each market, it identifies "new traders" (those whose first-ever order occurred within 7 days of the market's launch).
     It then measures how many of those new traders were retained by trading in *any other* market within 14 and 28 days.
-    Use the sidebar filters to narrow down markets by name or category.
+    
+    This data is loaded from a static file and is not calculated in real-time. For dynamic analysis, please use the **User Retention Explorer**.
     """)
 
     # Initial data load
     data = load_retention_data()
 
-    # Handle processing state from API (if applicable)
-    if is_processing(data):
-        st.info(f"Backend is processing user retention data. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds...")
-        with st.spinner("Please wait..."):
-            time.sleep(RETRY_DELAY_SECONDS)
-        st.rerun()
-        return
-
-    # Handle errors from API
+    # Handle errors from API (e.g., file not found)
     if has_error(data):
         error_msg = get_error_message(data)
         st.error(f"Failed to fetch user retention data: {error_msg}")
@@ -103,7 +90,7 @@ def user_retention_summary_page():
             }, inplace=True)
             
             # Initialize session state for filters
-            if 'all_categories' not in st.session_state:
+            if 'all_categories' not in st.session_state or not st.session_state.all_categories:
                 # Explode the category lists to find all unique categories
                 all_cats = set([cat for sublist in df['Category'] for cat in sublist])
                 st.session_state.all_categories = sorted(list(all_cats))
@@ -213,7 +200,7 @@ def user_retention_summary_page():
             st.text(traceback.format_exc())
 
     elif isinstance(data, list) and not data: # API returned empty list
-        st.info("No user retention data found. The backend returned an empty list. This might mean no hype markets are configured or no new traders were found for any configured market.")
+        st.info("No user retention data found. The static summary file might be empty or unformatted.")
         if st.button("Reload Data"):
             st.cache_data.clear()
             st.rerun()
