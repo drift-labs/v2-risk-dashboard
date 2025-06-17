@@ -11,8 +11,34 @@ import warnings
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import logging
+import json
 
 import boto3
+
+def load_markets_from_json(file_path: str) -> Dict[str, Dict[str, Any]]:
+    """Loads market data from a JSON file and formats it for the API."""
+    try:
+        with open(file_path, 'r') as f:
+            markets_data = json.load(f)
+        
+        formatted_markets = {}
+        for market in markets_data:
+            formatted_markets[market["marketName"]] = {
+                "index": market["marketIndex"],
+                "launch_ts": market["launchTs"],
+                "category": market["category"]
+            }
+        logger.info(f"Successfully loaded and formatted {len(formatted_markets)} markets from {file_path}")
+        return formatted_markets
+    except FileNotFoundError:
+        logger.error(f"Market file not found at {file_path}. API will not have market data.")
+        return {}
+    except json.JSONDecodeError:
+        logger.error(f"Error decoding JSON from {file_path}.")
+        return {}
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while loading markets: {e}")
+        return {}
 
 def log_current_identity():
     try:
@@ -33,15 +59,9 @@ router = APIRouter()
 
 # ───────────────────────── 1. CONFIG (adapted from hype_market_retention.py) ───────────────────────── #
 
-HYPE_MARKETS: Dict[str, Dict[str, int]] = {
-    "WIF-PERP":   {"index": 23, "launch_ts": 1706219971000},
-    "POPCAT-PERP":{"index": 34, "launch_ts": 1720013054000},
-    "HYPE-PERP":  {"index": 59, "launch_ts": 1733374800000}, # Example, adjust as needed
-    "KAITO-PERP": {"index": 69, "launch_ts": 1739545901000}, # Example, adjust as needed
-    "FARTCOIN-PERP": {"index": 71, "launch_ts": 1743086746000}, # Example, adjust as needed
-    "TRUMP-PERP": {"index": 64, "launch_ts": 1737219250000}, # Example, adjust as needed
-    "LAUNCHCOIN-PERP": {"index": 74, "launch_ts": 1747318237000} # Example, adjust as needed
-}
+# Load markets from the JSON file instead of using a hardcoded dictionary.
+# The path is relative to the root of the project where the application is run.
+ALL_MARKETS = load_markets_from_json("shared/markets.json")
 
 NEW_TRADER_WINDOW_DAYS: int = 7
 RETENTION_WINDOWS_DAYS: List[int] = [14, 28] # Affects Pydantic model if changed
@@ -61,6 +81,7 @@ S3_OUTPUT = os.environ.get("ATHENA_S3_OUTPUT", "s3://mainnet-beta-data-ingestion
 
 class RetentionSummaryItem(BaseModel):
     market: str
+    category: List[str]
     new_traders: int
     new_traders_list: Optional[List[str]] = None
     retained_users_14d: Optional[int] = None
@@ -153,9 +174,9 @@ async def fetch_and_process_retention_data() -> pd.DataFrame:
         log_current_identity()
 
         # 3A. discover "new traders" per market
-        logger.info("Scanning for new traders across all hype markets...")
+        logger.info("Scanning for new traders across all markets...")
         new_traders_frames: List[pd.DataFrame] = []
-        for mkt, cfg in HYPE_MARKETS.items():
+        for mkt, cfg in ALL_MARKETS.items():
             logger.info(f"• Scanning new traders for {mkt}…")
             q = sql_new_traders(cfg["index"], cfg["launch_ts"])
             # logger.debug(f"Generated SQL for {mkt} new traders:\\n{q}")
@@ -188,7 +209,7 @@ async def fetch_and_process_retention_data() -> pd.DataFrame:
         # 3B. retention look-ups
         retention_records: List[Dict[str, object]] = []
         if not new_traders.empty:
-            for mkt, cfg in HYPE_MARKETS.items():
+            for mkt, cfg in ALL_MARKETS.items():
                 mkt_traders = new_traders[new_traders.market == mkt].trader.tolist()
                 if not mkt_traders:
                     logger.info(f"No new traders for market {mkt}, skipping retention lookup.")
@@ -264,7 +285,7 @@ async def fetch_and_process_retention_data() -> pd.DataFrame:
         if retention.empty and new_traders.empty:
             logger.info("Both new_traders and retention are empty. Returning empty summary.")
             # Ensure all expected columns exist, even if with no data, matching Pydantic model
-            cols = ['market', 'new_traders', 'new_traders_list']
+            cols = ['market', 'category', 'new_traders', 'new_traders_list']
             for win_days in RETENTION_WINDOWS_DAYS:
                 cols.append(f'retained_users_{win_days}d')
                 cols.append(f'retention_ratio_{win_days}d')
@@ -294,9 +315,13 @@ async def fetch_and_process_retention_data() -> pd.DataFrame:
         else: # No new traders found at all
             final_summary_counts = pd.DataFrame({'market': pd.Series(dtype='str'), 'new_traders': pd.Series(dtype='int')})
 
-        # Ensure all HYPE_MARKETS are present in final_summary, even if they had 0 new traders
-        all_market_names_df = pd.DataFrame({'market': list(HYPE_MARKETS.keys())})
-        final_summary = pd.merge(all_market_names_df, final_summary_counts, on='market', how='left').fillna({'new_traders': 0})
+        # Ensure all ALL_MARKETS are present in final_summary, even if they had 0 new traders
+        all_markets_df = pd.DataFrame([
+            {'market': name, 'category': config['category']} 
+            for name, config in ALL_MARKETS.items()
+        ])
+
+        final_summary = pd.merge(all_markets_df, final_summary_counts, on='market', how='left').fillna({'new_traders': 0})
         final_summary['new_traders'] = final_summary['new_traders'].astype(int)
         
         # Merge new traders lists
@@ -350,14 +375,19 @@ async def fetch_and_process_retention_data() -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error in fetch_and_process_retention_data: {e}", exc_info=True)
         # For Pydantic model compatibility, return DataFrame with expected columns in case of error
-        cols = ['market', 'new_traders', 'new_traders_list']
+        cols = ['market', 'category', 'new_traders', 'new_traders_list']
         for w in RETENTION_WINDOWS_DAYS:
             cols.extend([f'retained_users_{w}d', f'retention_ratio_{w}d', f'retained_users_{w}d_list'])
         empty_df_on_error = pd.DataFrame(columns=cols)
         
         error_data = []
-        for market_name in HYPE_MARKETS.keys():
-            record: Dict[str, Any] = {'market': market_name, 'new_traders': 0, 'new_traders_list': []}
+        for market_name, config in ALL_MARKETS.items():
+            record: Dict[str, Any] = {
+                'market': market_name, 
+                'category': config.get('category', []),
+                'new_traders': 0, 
+                'new_traders_list': []
+            }
             for w in RETENTION_WINDOWS_DAYS:
                 record[f'retained_users_{w}d'] = 0
                 record[f'retention_ratio_{w}d'] = 0.0
@@ -388,14 +418,19 @@ async def get_user_retention_summary():
         logger.info("Received request for /summary endpoint.")
         summary_df = await fetch_and_process_retention_data()
         
-        if summary_df.empty and not HYPE_MARKETS: # No markets configured
+        if summary_df.empty and not ALL_MARKETS: # No markets configured
              return []
-        if summary_df.empty and HYPE_MARKETS: # Markets configured but no data (e.g. no new users at all)
+        if summary_df.empty and ALL_MARKETS: # Markets configured but no data (e.g. no new users at all)
             # Construct a list of RetentionSummaryItem with 0 values for all configured markets
             # This ensures the frontend gets a consistent structure.
             results = []
-            for market_name in HYPE_MARKETS.keys():
-                item_data: Dict[str, Any] = {"market": market_name, "new_traders": 0, "new_traders_list": []}
+            for market_name, config in ALL_MARKETS.items():
+                item_data: Dict[str, Any] = {
+                    "market": market_name, 
+                    "category": config.get('category', []),
+                    "new_traders": 0, 
+                    "new_traders_list": []
+                }
                 for win_day in RETENTION_WINDOWS_DAYS:
                     item_data[f"retained_users_{win_day}d"] = 0
                     item_data[f"retention_ratio_{win_day}d"] = 0.0
@@ -416,8 +451,3 @@ async def get_user_retention_summary():
     except Exception as e:
         logger.error(f"Unhandled error in /summary endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
-
-# To run this API locally (example):
-# Ensure FastAPI and Uvicorn are installed: pip install fastapi uvicorn
-# Save this file as user_retention_api.py
-# Run with: uvicorn user_retention_api:router --reload --port 8001 (assuming this router is added to a FastAPI app)
