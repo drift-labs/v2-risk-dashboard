@@ -1,20 +1,7 @@
-# This page will display the user retention data in a table format.
-# It will receive the data from the user_retention endpoint from the backend
-# It will also allow the user to filter the data by market and date range.
-# It will also allow the user to download the data in a CSV format.
-# It will also allow the user to export the data to a JSON file.
-
 import streamlit as st
 import pandas as pd
 import json # For JSON export
-import time # For potential retry delays
 from lib.api import fetch_api_data # Assuming this is your helper for API calls
-
-RETRY_DELAY_SECONDS = 5 # For retrying if API is processing
-
-# Helper function to check if the API result indicates backend processing
-def is_processing(result):
-    return isinstance(result, dict) and result.get("result") == "processing"
 
 # Helper function to check for errors in API result
 def has_error(result):
@@ -36,38 +23,30 @@ def get_error_message(result):
         return str(result["detail"])
     if isinstance(result, dict) and "message" in result:
         return str(result["message"])
-    return "Could not connect or fetch data from the backend."
+    return "Could not connect or fetch data from the backend. The static summary file may be missing or invalid."
 
 @st.cache_data(ttl=300) # Cache data for 5 minutes
 def load_retention_data():
-    """Fetches user retention summary data from the backend API."""
-    # Adjust 'section' and 'path' according to your fetch_api_data implementation
-    # and how the user_retention_api.router is mounted in your FastAPI app.
-    # Assuming the new endpoint is mounted under a 'user-retention' section similar to 'high-leverage'
-    data = fetch_api_data(section="user-retention", path="summary", retry=False)
+    """Fetches user retention summary data from the backend API, which reads from a static file."""
+    # Add use_cache=False to bypass the backend's cache middleware for this simple, fast endpoint.
+    data = fetch_api_data(section="user-retention-summary", path="summary", params={"use_cache": False}, retry=False)
     return data
 
-def user_retention_page():
-    st.title("User Retention Analysis for Hype Markets")
+def user_retention_summary_page():
+    st.title("User Retention Analysis for All Markets")
 
     st.markdown("""
-    This page displays user retention data for specified "hype" markets. 
-    It shows how many new traders (first-ever order in the market within 7 days of launch) 
-    were retained by trading in *any other* market within 14 and 28 days.
+    This page displays a pre-computed summary of user retention data for all markets on Drift.
+    For each market, it identifies "new traders" (those whose first-ever order occurred within 7 days of the market's launch).
+    It then measures how many of those new traders were retained by trading in *any other* market within 14 and 28 days.
+    
+    This data is loaded from a static file and is not calculated in real-time. For dynamic analysis, please use the **User Retention Explorer**.
     """)
 
     # Initial data load
     data = load_retention_data()
 
-    # Handle processing state from API (if applicable)
-    if is_processing(data):
-        st.info(f"Backend is processing user retention data. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds...")
-        with st.spinner("Please wait..."):
-            time.sleep(RETRY_DELAY_SECONDS)
-        st.rerun()
-        return
-
-    # Handle errors from API
+    # Handle errors from API (e.g., file not found)
     if has_error(data):
         error_msg = get_error_message(data)
         st.error(f"Failed to fetch user retention data: {error_msg}")
@@ -89,7 +68,7 @@ def user_retention_page():
             df['retention_ratio_28d'] = pd.to_numeric(df['retention_ratio_28d'], errors='coerce').fillna(0.0).astype(float)
 
             # Ensure list columns are treated as objects and handle potential NaNs (e.g. if API returns null instead of [])
-            list_columns = ['new_traders_list', 'retained_users_14d_list', 'retained_users_28d_list']
+            list_columns = ['new_traders_list', 'retained_users_14d_list', 'retained_users_28d_list', 'category']
             for col in list_columns:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: x if isinstance(x, list) else [])
@@ -99,6 +78,7 @@ def user_retention_page():
             # Rename columns for better display
             df.rename(columns={
                 'market': 'Market',
+                'category': 'Category',
                 'new_traders': 'New Traders (Count)',
                 'retained_users_14d': 'Retained at 14d (Count)',
                 'retention_ratio_14d': 'Retention Rate 14d',
@@ -109,21 +89,37 @@ def user_retention_page():
                 'retained_users_28d_list': 'Retained 28d (List)'
             }, inplace=True)
             
-            # --- Filtering (Applied to the original comprehensive df) ---
-            st.sidebar.header("Filters")
-            all_markets = ["All"] + sorted(df["Market"].unique().tolist())
-            selected_market = st.sidebar.selectbox("Filter by Market", all_markets)
-
-            filtered_df = df.copy()
-            if selected_market != "All":
-                filtered_df = filtered_df[filtered_df["Market"] == selected_market]
+            # Initialize session state for filters
+            if 'all_categories' not in st.session_state or not st.session_state.all_categories:
+                # Explode the category lists to find all unique categories
+                all_cats = set([cat for sublist in df['Category'] for cat in sublist])
+                st.session_state.all_categories = sorted(list(all_cats))
+            if 'selected_categories' not in st.session_state:
+                st.session_state.selected_categories = []
             
-            # (Optional: Date range filter if your data/API supports it. Not implemented based on current API)
-            # selected_date_range = st.sidebar.date_input("Filter by Date Range (if applicable)", [])
-            # if selected_date_range and len(selected_date_range) == 2:
-            #     start_date, end_date = selected_date_range
-            #     # Add logic to filter df by date if a date column exists
-            #     pass 
+            # --- Sidebar Filters ---
+            st.sidebar.header("Filters")
+            
+            # Market Name Filter (Search)
+            search_market = st.sidebar.text_input("Search by Market Name", "")
+
+            # Category Filter
+            st.session_state.selected_categories = st.sidebar.multiselect(
+                "Filter by Category",
+                options=st.session_state.all_categories,
+                default=st.session_state.selected_categories
+            )
+
+            # Apply filters
+            filtered_df = df.copy()
+            if search_market:
+                filtered_df = filtered_df[filtered_df['Market'].str.contains(search_market, case=False, na=False)]
+            
+            if st.session_state.selected_categories:
+                # Market must contain at least one of the selected categories
+                filtered_df = filtered_df[filtered_df['Category'].apply(
+                    lambda cats: any(cat in st.session_state.selected_categories for cat in cats)
+                )]
 
             # --- Display Tables ---
             if filtered_df.empty:
@@ -132,12 +128,9 @@ def user_retention_page():
                 # Table 1: Main Summary
                 st.subheader("Overall Retention Summary")
                 summary_cols = [
-                    'Market',
-                    'New Traders (Count)',
-                    'Retained at 14d (Count)',
-                    'Retention Rate 14d',
-                    'Retained at 28d (Count)',
-                    'Retention Rate 28d'
+                    'Market', 'Category', 'New Traders (Count)',
+                    'Retained at 14d (Count)', 'Retention Rate 14d',
+                    'Retained at 28d (Count)', 'Retention Rate 28d'
                 ]
                 main_summary_df = filtered_df[summary_cols]
                 st.dataframe(
@@ -207,7 +200,7 @@ def user_retention_page():
             st.text(traceback.format_exc())
 
     elif isinstance(data, list) and not data: # API returned empty list
-        st.info("No user retention data found. The backend returned an empty list. This might mean no hype markets are configured or no new traders were found for any configured market.")
+        st.info("No user retention data found. The static summary file might be empty or unformatted.")
         if st.button("Reload Data"):
             st.cache_data.clear()
             st.rerun()
@@ -224,4 +217,4 @@ def user_retention_page():
         st.rerun()
 
 if __name__ == "__main__":
-    user_retention_page()
+    user_retention_summary_page()

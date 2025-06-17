@@ -24,7 +24,8 @@ from backend.api import (
     ucache,
     vaults,
     high_leverage_api,
-    user_retention_api,
+    user_retention_summary_api,
+    user_retention_explorer_api,
 )
 from backend.middleware.cache_middleware import CacheMiddleware
 from backend.middleware.readiness import ReadinessMiddleware
@@ -93,7 +94,9 @@ app.include_router(positions.router, prefix="/api/positions", tags=["positions"]
 app.include_router(market_recommender_api.router, prefix="/api/market-recommender", tags=["market-recommender"])
 app.include_router(open_interest_api.router, prefix="/api/open-interest", tags=["open-interest"])
 app.include_router(high_leverage_api.router, prefix="/api/high-leverage", tags=["high-leverage"])
-app.include_router(user_retention_api.router, prefix="/api/user-retention", tags=["user-retention"])
+app.include_router(user_retention_summary_api.router, prefix="/api/user-retention-summary", tags=["user-retention-summary"])
+app.include_router(user_retention_explorer_api.router, prefix="/api/user-retention-explorer", tags=["user-retention-explorer"])
+
 # NOTE: All other routes should be in /api/* within the /api folder. Routes outside of /api are not exposed in k8s
 @app.get("/")
 async def root():
