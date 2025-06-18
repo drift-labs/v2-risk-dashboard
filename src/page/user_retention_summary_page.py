@@ -28,8 +28,8 @@ def get_error_message(result):
 @st.cache_data(ttl=300) # Cache data for 5 minutes
 def load_retention_data():
     """Fetches user retention summary data from the backend API, which reads from a static file."""
-    # Add use_cache=False to bypass the backend's cache middleware for this simple, fast endpoint.
-    data = fetch_api_data(section="user-retention-summary", path="summary", params={"use_cache": False}, retry=False)
+    # The middleware expects `bypass_cache=true` to skip caching.
+    data = fetch_api_data(section="user-retention-summary", path="summary", params={"bypass_cache": "true"}, retry=False)
     return data
 
 def user_retention_summary_page():

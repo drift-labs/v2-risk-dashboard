@@ -12,8 +12,8 @@ def is_processing(result):
 @st.cache_data(ttl=3600) # Cache for 1 hour
 def get_market_list():
     """Fetches the list of available markets for the dropdown."""
-    # Add use_cache=False to bypass the backend's cache middleware for this simple, fast endpoint.
-    return fetch_api_data(section="user-retention-explorer", path="markets", params={"use_cache": False})
+    # The middleware expects `bypass_cache=true`, not `use_cache=False`.
+    return fetch_api_data(section="user-retention-explorer", path="markets", params={"bypass_cache": "true"})
 
 # Function to call the calculation endpoint
 def calculate_retention(market, start_date):
