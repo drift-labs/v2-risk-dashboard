@@ -120,13 +120,13 @@ def get_account_health_distribution(request: BackendRequest):
 
 
 @router.get("/largest_perp_positions")
-def get_largest_perp_positions(request: BackendRequest, number_of_positions: int, market_index: int = None):
+def get_largest_perp_positions(request: BackendRequest, market_index: int = None):
     """
     Get the largest perp positions by notional value across all users or for a specific market if market_index is provided.
     """
     vat: Vat = request.state.backend_state.vat
     logger.info(
-        f"==> [largest_perp_positions] Called with number_of_positions={number_of_positions}, "
+        f"==> [largest_perp_positions] Called with "
         f"market_index={market_index}, current_pickle={request.state.backend_state.current_pickle_path}"
     )
     try:
@@ -168,20 +168,16 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
                         position.base_asset_amount / BASE_PRECISION,  # Keep original sign for display
                     ))
 
-    # Sort all positions by value (descending) and take top N
-    positions = sorted(all_positions, key=lambda x: x[0], reverse=True)[:number_of_positions]
+    # Sort all positions by value (descending)
+    positions = sorted(all_positions, key=lambda x: x[0], reverse=True)
 
+    # Add summary logging
+    total_value_returned = sum(pos[0] for pos in positions)
     logger.info(
         f"==> [largest_perp_positions] Stats => total_checked={total_positions_checked}, "
-        f"positions_meeting_criteria={positions_meeting_criteria}, positions_returned={len(positions)}"
+        f"positions_meeting_criteria={positions_meeting_criteria}, positions_returned={len(positions)}, "
+        f"total_notional_value=${total_value_returned:,.2f}"
     )
-
-    # Log each position with value and sign
-    for idx, (value, pubkey, market_idx, amt) in enumerate(positions, 1):
-        logger.info(
-            f"==> [largest_perp_positions] Position {idx}: Market Index={market_idx}, "
-            f"Value=${value:,.2f}, Base Asset Amount={amt:,.2f}, Public Key={pubkey}"
-        )
 
     data = {
         "Market Index": [pos[2] for pos in positions],
@@ -194,17 +190,16 @@ def get_largest_perp_positions(request: BackendRequest, number_of_positions: int
 
 
 @router.get("/most_levered_perp_positions_above_1m")
-def get_most_levered_perp_positions_above_1m(request: BackendRequest, number_of_positions: int = 10, market_index: int = None):
+def get_most_levered_perp_positions_above_1m(request: BackendRequest, market_index: int = None):
     """
     Get the most leveraged perpetual positions with value above $1 million.
 
     This endpoint calculates the leverage of each perpetual position with a value
-    over $1 million and returns the most leveraged positions, limited by number_of_positions.
+    over $1 million and returns the most leveraged positions.
     Results can be filtered by market_index if provided.
 
     Args:
         request: The backend request object
-        number_of_positions: Maximum number of positions to return (default: 10)
         market_index: Optional market index to filter by
 
     Returns:
@@ -216,7 +211,7 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest, number_of_
         - Public Key (list[str]): The public keys of the position holders
     """
     vat: Vat = request.state.backend_state.vat
-    top_positions: list[tuple[float, str, int, float, float]] = []
+    all_positions: list[tuple[float, str, int, float, float]] = []
 
     for user in vat.users.values():
         try:
@@ -242,25 +237,20 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest, number_of_
                         ) * market_price_ui
                         leverage = base_asset_value / total_collateral
                         if base_asset_value > 1_000_000:
-                            heap_item = (
+                            item = (
                                 to_financial(base_asset_value),
                                 user.user_public_key,
                                 position.market_index,
                                 position.base_asset_amount / BASE_PRECISION,
                                 leverage,
                             )
-
-                            if len(top_positions) < number_of_positions:
-                                heapq.heappush(top_positions, heap_item)
-                            else:
-                                heapq.heappushpop(top_positions, heap_item)
+                            all_positions.append(item)
 
     positions = sorted(
-        top_positions,
+        all_positions,
         key=lambda x: x[4],
+        reverse=True
     )
-
-    positions.reverse()
 
     data = {
         "Market Index": [pos[2] for pos in positions],
@@ -274,17 +264,16 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest, number_of_
 
 
 @router.get("/largest_spot_borrows")
-def get_largest_spot_borrows(request: BackendRequest, number_of_positions: int = 10, market_index: int = None):
+def get_largest_spot_borrows(request: BackendRequest, market_index: int = None):
     """
     Get the largest spot borrowing positions by value.
 
     This endpoint retrieves the largest spot borrowing positions across all users,
-    calculated based on the current market prices. Results can be limited by 
-    number_of_positions and filtered by market_index if provided.
+    calculated based on the current market prices. Results can be filtered by 
+    market_index if provided.
 
     Args:
         request: The backend request object
-        number_of_positions: Maximum number of positions to return (default: 10)
         market_index: Optional market index to filter by
 
     Returns:
@@ -295,7 +284,7 @@ def get_largest_spot_borrows(request: BackendRequest, number_of_positions: int =
         - Public Key (list[str]): The public keys of the borrowers
     """
     vat: Vat = request.state.backend_state.vat
-    top_borrows: list[tuple[float, str, int, float]] = []
+    all_borrows: list[tuple[float, str, int, float]] = []
 
     for user in vat.users.values():
         for position in user.get_user_account().spot_positions:
@@ -312,24 +301,15 @@ def get_largest_spot_borrows(request: BackendRequest, number_of_positions: int =
                     borrow_value = (
                         position.scaled_balance / SPOT_BALANCE_PRECISION
                     ) * market_price_ui
-                    heap_item = (
+                    item = (
                         to_financial(borrow_value),
                         user.user_public_key,
                         position.market_index,
                         position.scaled_balance / SPOT_BALANCE_PRECISION,
                     )
+                    all_borrows.append(item)
 
-                    if len(top_borrows) < number_of_positions:
-                        heapq.heappush(top_borrows, heap_item)
-                    else:
-                        heapq.heappushpop(top_borrows, heap_item)
-
-    borrows = sorted(
-        (value, pubkey, market_idx, amt)
-        for value, pubkey, market_idx, amt in top_borrows
-    )
-
-    borrows.reverse()
+    borrows = sorted(all_borrows, key=lambda x: x[0], reverse=True)
 
     data = {
         "Market Index": [pos[2] for pos in borrows],
@@ -342,17 +322,16 @@ def get_largest_spot_borrows(request: BackendRequest, number_of_positions: int =
 
 
 @router.get("/most_levered_spot_borrows_above_1m")
-def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_positions: int = 10, market_index: int = None):
+def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index: int = None):
     """
     Get the most leveraged spot borrowing positions with value above $750,000.
 
     This endpoint calculates the leverage of each spot borrowing position with a value
-    over $750,000 and returns the most leveraged positions, limited by number_of_positions.
+    over $750,000 and returns the most leveraged positions.
     Results can be filtered by market_index if provided.
 
     Args:
         request: The backend request object
-        number_of_positions: Maximum number of positions to return (default: 10)
         market_index: Optional market index to filter by
 
     Returns:
@@ -365,7 +344,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_po
         - Error (list[str]): Error details if any (empty string if no error)
     """
     vat: Vat = request.state.backend_state.vat
-    top_borrows: list[tuple[float, str, int, float, float, str]] = []  # Added error field
+    all_borrows: list[tuple[float, str, int, float, float, str]] = []  # Added error field
     error_positions = []  # Track positions with errors for logging
 
     for user in vat.users.values():
@@ -406,17 +385,16 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_po
                         "error": position_error
                     })
                     
-                    # If we don't have enough items yet, add this one with error
-                    if len(top_borrows) < number_of_positions:
-                        heap_item = (
-                            borrow_value,  # Will be sorted last due to 0 value
-                            user.user_public_key,
-                            position.market_index,
-                            scaled_balance,
-                            leverage,
-                            position_error,
-                        )
-                        heapq.heappush(top_borrows, heap_item)
+                    # Add this one with error
+                    item = (
+                        borrow_value,  # Will be sorted last due to 0 value
+                        user.user_public_key,
+                        position.market_index,
+                        scaled_balance,
+                        leverage,
+                        position_error,
+                    )
+                    all_borrows.append(item)
                 else:
                     try:
                         market_price_ui = market_price.price / PRICE_PRECISION
@@ -432,7 +410,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_po
                                 position_error = "Zero collateral"
                         
                         if borrow_value > 750_000:
-                            heap_item = (
+                            item = (
                                 to_financial(borrow_value),
                                 user.user_public_key,
                                 position.market_index,
@@ -440,11 +418,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_po
                                 leverage,
                                 position_error,  # Empty string if no error
                             )
-
-                            if len(top_borrows) < number_of_positions:
-                                heapq.heappush(top_borrows, heap_item)
-                            else:
-                                heapq.heappushpop(top_borrows, heap_item)
+                            all_borrows.append(item)
                     except Exception as e:
                         calc_error = f"Calculation error: {str(e)}"
                         position_error = calc_error if not position_error else f"{position_error}; {calc_error}"
@@ -465,7 +439,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, number_of_po
         logger.warning(f"Found {len(error_positions)} positions with errors: {error_positions}")
 
     positions = sorted(
-        top_borrows,
+        all_borrows,
         key=lambda x: x[4] if not x[5] else float('-inf'),  # Sort error positions first
         reverse=True,
     )
