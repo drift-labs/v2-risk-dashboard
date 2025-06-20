@@ -18,9 +18,13 @@ def get_market_list():
 # Function to call the calculation endpoint
 def calculate_retention(market, start_date):
     """Fetches retention data for a specific market and date."""
-    params = {"market_name": market, "start_date": start_date.strftime("%Y-%m-%d")}
-    # We expect this call to take time, so no retry logic here.
-    # Errors will be caught and displayed.
+    params = {
+        "market_name": market, 
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "bypass_cache": "false" # Always bypass cache for on-demand calculations
+    }
+    # We expect this call to take time, but we are not using the background cache.
+    # The request will wait for the full response from the API.
     data = fetch_api_data(section="user-retention-explorer", path="calculate", params=params, retry=False)
     return data
 
@@ -32,6 +36,8 @@ def user_retention_explorer_page():
     1.  **Select a Market**: Choose the market you want to analyze.
     2.  **Select a Start Date**: This is the beginning of the 7-day window to identify "new traders".
     3.  **Click Execute**: The system will query the data warehouse to find new traders and calculate their retention at 14 and 28 days in *any other* market.
+    
+    **Note on "New Traders"**: This analysis now filters for *newly trading authorities*. A user is only considered "new" if their first-ever trade on the platform occurs within the selected time window and is made with their primary account (`subaccountid=0`). This ensures we don't mistakenly include experienced users who are simply creating new sub-accounts.
     
     **Note**: This query can take a few minutes to complete. Please be patient.
     """)
@@ -109,10 +115,10 @@ def user_retention_explorer_page():
 
         if "error" in result:
              st.error(result["error"])
-        elif isinstance(result, dict) and result.get("detail"):
-            error_msg = result.get("detail", "An unknown error occurred.")
+        elif isinstance(result, dict) and (result.get("detail") or result.get("result") == "error"):
+            error_msg = result.get("detail") or result.get("message", "An unknown error occurred.")
             st.error(f"Failed to calculate retention data: {error_msg}")
-        elif isinstance(result, dict) and "market" in result:
+        elif isinstance(result, dict) and "user_data" in result:
             st.header("Analysis Results")
 
             df_data = {
@@ -125,34 +131,80 @@ def user_retention_explorer_page():
                     result['market'],
                     ', '.join(result['category']),
                     result['start_date'],
-                    result['new_traders'],
-                    result['retained_users_14d'],
+                    result['new_traders_count'],
+                    result['retained_14d_count'],
                     f"{result['retention_ratio_14d']:.2%}",
-                    result['retained_users_28d'],
+                    result['retained_28d_count'],
                     f"{result['retention_ratio_28d']:.2%}"
                 ]
             }
             summary_df = pd.DataFrame(df_data)
             st.table(summary_df.set_index('Metric'))
 
-            # Display lists of traders in expanders
-            with st.expander("View New Traders List"):
-                if result['new_traders_list']:
-                    st.dataframe(pd.DataFrame(result['new_traders_list'], columns=["User Address"]), hide_index=True, use_container_width=True)
-                else:
-                    st.caption("No new traders found.")
+            # --- Display Consolidated User Data Table ---
+            st.subheader("User Activity Details")
             
-            with st.expander("View 14-Day Retained Users List"):
-                if result['retained_users_14d_list']:
-                    st.dataframe(pd.DataFrame(result['retained_users_14d_list'], columns=["User Address"]), hide_index=True, use_container_width=True)
-                else:
-                    st.caption("No users retained at 14 days.")
+            if not result['user_data']:
+                st.caption("No new traders found for the selected criteria.")
+            else:
+                user_df = pd.DataFrame(result['user_data'])
 
-            with st.expander("View 28-Day Retained Users List"):
-                if result['retained_users_28d_list']:
-                    st.dataframe(pd.DataFrame(result['retained_users_28d_list'], columns=["User Address"]), hide_index=True, use_container_width=True)
-                else:
-                    st.caption("No users retained at 28 days.")
+                # Create the URL column for linking
+                user_df['url'] = "https://app.drift.trade/overview?userAccount=" + user_df['user_address']
+
+                # Add total volume columns
+                user_df['total_initial_volume'] = user_df['initial_selected_market_volume'] + user_df['initial_other_market_volume']
+                user_df['total_volume_14d'] = user_df['selected_market_volume_14d'] + user_df['other_market_volume_14d']
+                user_df['total_volume_28d'] = user_df['selected_market_volume_28d'] + user_df['other_market_volume_28d']
+                user_df['aggregate_volume'] = user_df['total_initial_volume'] + user_df['total_volume_28d']
+
+                # Rename columns for display
+                user_df = user_df.rename(columns={
+                    'user_address': 'User Address',
+                    'initial_selected_market_volume': 'Initial Selected Market Volume (7d)',
+                    'initial_other_market_volume': 'Initial Other Market Volume (7d)',
+                    'total_initial_volume': 'Total Initial Volume (7d)',
+                    'selected_market_volume_14d': 'Selected Market Volume (14d)',
+                    'other_market_volume_14d': 'Other Market Volume (14d)',
+                    'selected_market_volume_28d': 'Selected Market Volume (28d)',
+                    'other_market_volume_28d': 'Other Market Volume (28d)',
+                    'total_volume_14d': 'Total Volume (14d)',
+                    'total_volume_28d': 'Total Volume (28d)',
+                    'aggregate_volume': 'Aggregate Volume',
+                })
+                
+                # Define column configuration for formatting
+                column_config = {
+                    "url": st.column_config.LinkColumn(
+                        "User Address",
+                        help="The user's wallet address. Click to view on Drift.",
+                        display_text=".*userAccount=(.*)"
+                    ),
+                    "Initial Selected Market Volume (7d)": st.column_config.NumberColumn(format="$%.2f", help="Volume in the selected market during the initial 7-day period (Days 1-7)."),
+                    "Initial Other Market Volume (7d)": st.column_config.NumberColumn(format="$%.2f", help="Volume in all other markets during the initial 7-day period (Days 1-7)."),
+                    "Total Initial Volume (7d)": st.column_config.NumberColumn(format="$%.2f", help="Total volume across all markets during the initial 7-day period (Days 1-7)."),
+                    "Selected Market Volume (14d)": st.column_config.NumberColumn(format="$%.2f", help="Volume in the selected market during the 14-day retention period (Days 8-21)."),
+                    "Other Market Volume (14d)": st.column_config.NumberColumn(format="$%.2f", help="Volume in all other markets during the 14-day retention period (Days 8-21)."),
+                    "Total Volume (14d)": st.column_config.NumberColumn(format="$%.2f", help="Total volume across all markets during the 14-day retention period (Days 8-21)."),
+                    "Selected Market Volume (28d)": st.column_config.NumberColumn(format="$%.2f", help="Volume in the selected market during the 28-day retention period (Days 8-35)."),
+                    "Other Market Volume (28d)": st.column_config.NumberColumn(format="$%.2f", help="Volume in all other markets during the 28-day retention period (Days 8-35)."),
+                    "Total Volume (28d)": st.column_config.NumberColumn(format="$%.2f", help="Total volume across all markets during the 28-day retention period (Days 8-35)."),
+                    "Aggregate Volume": st.column_config.NumberColumn(format="$%.2f", help="Total volume across all markets and all time periods (initial 7d + 28d retention)."),
+                }
+
+                # Display the dataframe
+                st.dataframe(
+                    user_df[[
+                        'url', 
+                        'Initial Selected Market Volume (7d)', 'Initial Other Market Volume (7d)', 'Total Initial Volume (7d)',
+                        'Selected Market Volume (14d)', 'Other Market Volume (14d)', 'Total Volume (14d)',
+                        'Selected Market Volume (28d)', 'Other Market Volume (28d)', 'Total Volume (28d)',
+                        'Aggregate Volume'
+                    ]], 
+                    hide_index=True, 
+                    use_container_width=True,
+                    column_config=column_config
+                )
 
         else:
             st.error("Received unexpected data format from the backend.")
