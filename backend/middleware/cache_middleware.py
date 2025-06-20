@@ -310,78 +310,23 @@ class CacheMiddleware(BaseHTTPMiddleware):
 
     def _log_perp_positions_details(self, data, cache_status, cache_file, request_path):
          """Helper method to log details specifically for the largest_perp_positions endpoint."""
-         # Direct print statements guaranteed to show in the terminal
-         print(f"\n======== CACHED POSITIONS ({cache_status}) ========")
-         print(f"Cache file: {cache_file}")
-
          positions_returned = 0
-         # Handle potential variations in response structure (list vs dict)
-         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+         if isinstance(data, list):
              positions_returned = len(data)
-             print(f"Total positions returned (list format): {positions_returned}")
-             for idx, pos in enumerate(data):
-                 position_num = idx + 1
-                 print(f"Position {position_num}: {pos}")
-
          elif isinstance(data, dict) and "Market Index" in data:
              positions_returned = len(data.get("Market Index", []))
-             print(f"Total positions returned (dict format): {positions_returned}")
 
-             if positions_returned > 0:
-                 market_indices = data.get("Market Index", [])
-                 values = data.get("Value", [])
-                 base_amounts = data.get("Base Asset Amount", [])
-                 public_keys = data.get("Public Key", [])
-
-                 # Log positions in the correct order (1 to N)
-                 for idx in range(positions_returned):
-                     market_idx = market_indices[idx] if idx < len(market_indices) else "N/A"
-                     value = values[idx] if idx < len(values) else "N/A"
-                     base_amt = base_amounts[idx] if idx < len(base_amounts) else "N/A"
-                     pub_key = public_keys[idx] if idx < len(public_keys) else "N/A"
-
-                     # Positions are already sorted, so we can log them as is
-                     position_num = idx + 1
-                     print(f"Position {position_num}:")
-                     print(f"   Market Index: {market_idx}")
-                     print(f"   Value: {value}")
-                     print(f"   Base Asset Amount: {base_amt}")
-                     print(f"   Public Key: {pub_key}")
-             else:
-                 print("No positions found in cached dictionary response")
-         else:
-             print(f"Warning: Unrecognized format for position data or empty data. Data: {data}")
-
-         print("======== END CACHED POSITIONS ========\n")
-
-         # Also log to standard logger for Loki
-         log = logging.getLogger("backend.api.health") # Use appropriate logger name if different
-         log.info(f"[CACHED {cache_status}] BEGIN POSITION DETAILS ({request_path})----------------------------------------")
-         if isinstance(data, list) and positions_returned > 0:
-             for idx, pos in enumerate(data):
-                 log.info(f"Position {idx + 1}: {pos}")
-         elif isinstance(data, dict) and positions_returned > 0:
-             market_indices = data.get("Market Index", [])
-             values = data.get("Value", [])
-             base_amounts = data.get("Base Asset Amount", [])
-             public_keys = data.get("Public Key", [])
-             for idx in range(positions_returned):
-                 market_idx = market_indices[idx] if idx < len(market_indices) else "N/A"
-                 value = values[idx] if idx < len(values) else "N/A"
-                 base_amt = base_amounts[idx] if idx < len(base_amounts) else "N/A"
-                 pub_key = public_keys[idx] if idx < len(public_keys) else "N/A"
-
-                 position_num = idx + 1
-                 log.info(
-                     f"Position {position_num}:\n"
-                     f"   Market Index: {market_idx}\n"
-                     f"   Value: {value}\n"
-                     f"   Base Asset Amount: {base_amt}\n"
-                     f"   Public Key: {pub_key}"
-                 )
-         else:
-             log.info("No positions logged.")
-         log.info(f"[CACHED {cache_status}] END POSITION DETAILS ({request_path}) ----------------------------------------")
+         summary_message = f"[{cache_status}] ({request_path}): Found {positions_returned} cached positions. Details suppressed to reduce log noise."
+         
+         # Log summary to console
+         print(f"\n======== CACHED POSITIONS SUMMARY ({cache_status}) ========")
+         print(summary_message)
+         print(f"Cache file: {cache_file}")
+         print("======== END CACHED POSITIONS SUMMARY ========\n")
+         
+         # Log summary to standard logger
+         log = logging.getLogger("backend.api.health")
+         log.info(summary_message)
 
 
     async def _fetch_and_cache(

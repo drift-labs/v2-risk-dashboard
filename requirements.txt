@@ -12,7 +12,7 @@ uvicorn==0.34.0
 requests==2.32.3
 plotly==6.0.0
 anchorpy==0.21.0
-driftpy>=0.8.56
+driftpy==0.8.57
 ccxt==4.2.17
 rich>=10.14.0
 aiofiles==24.1.0
