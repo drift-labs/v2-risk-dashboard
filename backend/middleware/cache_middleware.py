@@ -392,9 +392,13 @@ class CacheMiddleware(BaseHTTPMiddleware):
                 logger.warning(
                     f"Failed to fetch data for {request.url.path}. Status code: {response.status_code}"
                 )
-                # Overwrite placeholder with error state or remove? Let's overwrite.
-                with open(cache_file, "w") as f:
-                    json.dump({"content": ERROR_PLACEHOLDER, "status_code": response.status_code, "headers": {}}, f)
+                # On failure, remove the placeholder to allow retries
+                if os.path.exists(cache_file):
+                    try:
+                        os.remove(cache_file)
+                        logger.info(f"Removed placeholder file due to non-200 response: {cache_file}")
+                    except OSError as e:
+                        logger.error(f"Failed to remove placeholder file {cache_file} after non-200 response: {e}")
 
             # Run cleanup AFTER successfully writing new cache or error placeholder
             self.cleanup_old_cache_files()
@@ -403,12 +407,13 @@ class CacheMiddleware(BaseHTTPMiddleware):
             logger.error(
                 f"Error in background task for {request.url.path} under key {cache_key}: {str(e)}"
             )
-            # Attempt to overwrite placeholder with error state
-            try:
-                with open(cache_file, "w") as f:
-                     json.dump({"content": ERROR_PLACEHOLDER, "status_code": 500, "headers": {}}, f)
-            except Exception as write_e:
-                 logger.error(f"Failed to write error placeholder for {cache_file}: {write_e}")
+            # On failure, remove the placeholder to allow retries
+            if os.path.exists(cache_file):
+                try:
+                    os.remove(cache_file)
+                    logger.info(f"Removed placeholder file due to exception: {cache_file}")
+                except OSError as remove_e:
+                    logger.error(f"Failed to remove placeholder file {cache_file} after exception: {remove_e}")
             import traceback
             traceback.print_exc()
         finally:

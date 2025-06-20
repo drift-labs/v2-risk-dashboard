@@ -12,6 +12,9 @@ def is_processing(result):
     """Checks if the API result indicates backend processing."""
     return isinstance(result, dict) and result.get("result") == "processing"
 
+def has_error(result):
+    """Checks if the API result indicates an error."""
+    return isinstance(result, dict) and "error" in result
 
 def _get_perp_market_symbol_display(market_index):
     """Safely get the display string for a perp market index."""
@@ -190,6 +193,8 @@ def health_page():
         
         if is_processing(largest_perp_positions):
             is_still_processing = True
+        elif has_error(largest_perp_positions):
+            st.error(f"Error fetching largest perp positions: {largest_perp_positions.get('error', 'Unknown error')}")
         else:
             # Convert to DataFrame and add pagination
             df = pd.DataFrame(largest_perp_positions)
@@ -236,6 +241,8 @@ def health_page():
 
         if is_processing(most_levered_positions):
             is_still_processing = True
+        elif has_error(most_levered_positions):
+            st.error(f"Error fetching most levered perp positions: {most_levered_positions.get('error', 'Unknown error')}")
         else:
             # Format market index in most_levered_positions too
             most_levered_df = pd.DataFrame(most_levered_positions)
@@ -310,6 +317,8 @@ def health_page():
         
         if is_processing(largest_spot_borrows):
             is_still_processing = True
+        elif has_error(largest_spot_borrows):
+            st.error(f"Error fetching largest spot borrows: {largest_spot_borrows.get('error', 'Unknown error')}")
         else:
             # Convert to dataframe and add market symbols
             spot_df = pd.DataFrame(largest_spot_borrows)
@@ -356,6 +365,8 @@ def health_page():
         )
         if is_processing(most_levered_borrows):
             is_still_processing = True
+        elif has_error(most_levered_borrows):
+            st.error(f"Error fetching most levered spot borrows: {most_levered_borrows.get('error', 'Unknown error')}")
         else:
             # Convert to dataframe and add market symbols
             levered_spot_df = pd.DataFrame(most_levered_borrows)
