@@ -2,7 +2,6 @@ import datetime
 import os
 from typing import Optional, Any, Union
 import pandas as pd
-import copy # Added for deepcopy
 
 import requests
 from driftpy.decode.utils import decode_name
@@ -289,12 +288,12 @@ def human_amm_df(df):
 
 def serialize_perp_market(market: PerpMarketAccount):
     # Prepare market data by stringifying sumtypes and Pubkeys
-    market_dict_prepared = _prepare_for_serialization(copy.deepcopy(market.__dict__))
-    amm_dict_prepared = _prepare_for_serialization(copy.deepcopy(market.amm.__dict__))
-    hist_oracle_data_prepared = _prepare_for_serialization(copy.deepcopy(market.amm.historical_oracle_data.__dict__))
-    fee_pool_prepared = _prepare_for_serialization(copy.deepcopy(market.amm.fee_pool.__dict__))
-    insurance_claim_prepared = _prepare_for_serialization(copy.deepcopy(market.insurance_claim.__dict__))
-    pnl_pool_prepared = _prepare_for_serialization(copy.deepcopy(market.pnl_pool.__dict__))
+    market_dict_prepared = _prepare_for_serialization(market.__dict__)
+    amm_dict_prepared = _prepare_for_serialization(market.amm.__dict__)
+    hist_oracle_data_prepared = _prepare_for_serialization(market.amm.historical_oracle_data.__dict__)
+    fee_pool_prepared = _prepare_for_serialization(market.amm.fee_pool.__dict__)
+    insurance_claim_prepared = _prepare_for_serialization(market.insurance_claim.__dict__)
+    pnl_pool_prepared = _prepare_for_serialization(market.pnl_pool.__dict__)
 
     market_df = pd.json_normalize(market_dict_prepared).drop(['amm', 'insurance_claim', 'pnl_pool'],axis=1, errors='ignore').pipe(human_market_df)
     # 'name' is bytes, decode_name handles it; 'pubkey' is already stringified by _prepare_for_serialization if it was a Pubkey object
@@ -319,25 +318,17 @@ def serialize_perp_market(market: PerpMarketAccount):
 
     result_df = pd.concat([market_df, amm_df, amm_hist_oracle_df, market_amm_pool_df, market_if_df, market_pool_df],axis=1)
     
-    # Final conversion of object columns to string for Arrow compatibility
-    for col in result_df.columns:
-        if result_df[col].dtype == 'object':
-            try:
-                result_df[col] = result_df[col].astype(str)
-            except Exception:
-                # Fallback if astype(str) fails for any reason on a column
-                result_df[col] = result_df[col].apply(lambda x: str(x) if pd.notnull(x) else x)
     return result_df
 
 
 def serialize_spot_market(spot_market: SpotMarketAccount):
     # Prepare spot_market data
-    spot_market_dict_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.__dict__))
-    insurance_fund_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.insurance_fund.__dict__))
-    hist_oracle_data_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.historical_oracle_data.__dict__))
-    hist_index_data_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.historical_index_data.__dict__))
-    revenue_pool_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.revenue_pool.__dict__))
-    spot_fee_pool_prepared = _prepare_for_serialization(copy.deepcopy(spot_market.spot_fee_pool.__dict__))
+    spot_market_dict_prepared = _prepare_for_serialization(spot_market.__dict__)
+    insurance_fund_prepared = _prepare_for_serialization(spot_market.insurance_fund.__dict__)
+    hist_oracle_data_prepared = _prepare_for_serialization(spot_market.historical_oracle_data.__dict__)
+    hist_index_data_prepared = _prepare_for_serialization(spot_market.historical_index_data.__dict__)
+    revenue_pool_prepared = _prepare_for_serialization(spot_market.revenue_pool.__dict__)
+    spot_fee_pool_prepared = _prepare_for_serialization(spot_market.spot_fee_pool.__dict__)
 
     spot_market_df = pd.json_normalize(spot_market_dict_prepared).drop([
         'historical_oracle_data', 'historical_index_data',
@@ -370,12 +361,4 @@ def serialize_spot_market(spot_market: SpotMarketAccount):
 
     result_df = pd.concat([spot_market_df, if_df, hist_oracle_df, hist_index_df, market_pool_df, market_fee_df],axis=1)
     
-    # Final conversion of object columns to string for Arrow compatibility
-    for col in result_df.columns:
-        if result_df[col].dtype == 'object':
-            try:
-                result_df[col] = result_df[col].astype(str)
-            except Exception:
-                # Fallback if astype(str) fails for any reason on a column
-                result_df[col] = result_df[col].apply(lambda x: str(x) if pd.notnull(x) else x)
     return result_df
