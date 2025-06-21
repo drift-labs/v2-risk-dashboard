@@ -163,7 +163,7 @@ def get_largest_perp_positions(request: BackendRequest, market_index: int = None
                     # Store position info with actual value
                     all_positions.append((
                         base_asset_value,  # Actual value for sorting
-                        user.user_public_key,
+                        str(user.user_public_key),
                         position.market_index,
                         position.base_asset_amount / BASE_PRECISION,  # Keep original sign for display
                     ))
@@ -239,7 +239,7 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest, market_ind
                         if base_asset_value > 1_000_000:
                             item = (
                                 to_financial(base_asset_value),
-                                user.user_public_key,
+                                str(user.user_public_key),
                                 position.market_index,
                                 position.base_asset_amount / BASE_PRECISION,
                                 leverage,
@@ -303,7 +303,7 @@ def get_largest_spot_borrows(request: BackendRequest, market_index: int = None):
                     ) * market_price_ui
                     item = (
                         to_financial(borrow_value),
-                        user.user_public_key,
+                        str(user.user_public_key),
                         position.market_index,
                         position.scaled_balance / SPOT_BALANCE_PRECISION,
                     )
@@ -380,7 +380,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index
                     
                     error_positions.append({
                         "market_index": position.market_index,
-                        "public_key": user.user_public_key,
+                        "public_key": str(user.user_public_key),
                         "scaled_balance": scaled_balance,
                         "error": position_error
                     })
@@ -388,7 +388,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index
                     # Add this one with error
                     item = (
                         borrow_value,  # Will be sorted last due to 0 value
-                        user.user_public_key,
+                        str(user.user_public_key),
                         position.market_index,
                         scaled_balance,
                         leverage,
@@ -412,7 +412,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index
                         if borrow_value > 750_000:
                             item = (
                                 to_financial(borrow_value),
-                                user.user_public_key,
+                                str(user.user_public_key),
                                 position.market_index,
                                 position.scaled_balance / SPOT_BALANCE_PRECISION,
                                 leverage,
@@ -429,7 +429,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index
                         # Add error position
                         error_positions.append({
                             "market_index": position.market_index,
-                            "public_key": user.user_public_key,
+                            "public_key": str(user.user_public_key),
                             "scaled_balance": position.scaled_balance / SPOT_BALANCE_PRECISION,
                             "error": position_error
                         })
@@ -487,7 +487,7 @@ def get_largest_spot_borrow_per_market(request: BackendRequest):
                     ) * market_price_ui
                     borrow_item = (
                         to_financial(borrow_value),
-                        user.user_public_key,
+                        str(user.user_public_key),
                         position.market_index,
                         position.scaled_balance / SPOT_BALANCE_PRECISION,
                     )
