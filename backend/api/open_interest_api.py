@@ -1,14 +1,38 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from driftpy.constants.numeric_constants import PRICE_PRECISION
-from driftpy.constants.config import mainnet_perp_market_configs
+from driftpy.constants.perp_markets import mainnet_perp_market_configs
+from typing import Optional, List
+import json
+import logging
 
 from backend.state import BackendRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-async def _get_open_interest_per_authority(request: BackendRequest) -> dict:
+def load_markets_from_json(file_path: str):
+    """Loads market data from a JSON file and formats it for the API."""
+    try:
+        with open(file_path, 'r') as f:
+            markets_data = json.load(f)
+        
+        # We need a mapping from marketName to marketIndex
+        formatted_markets = {market["marketName"]: market["marketIndex"] for market in markets_data}
+        logger.info(f"Successfully loaded and formatted {len(formatted_markets)} markets from {file_path}")
+        return formatted_markets
+    except Exception as e:
+        logger.error(f"Error loading markets from {file_path}: {e}")
+        return {}
+
+ALL_MARKETS = load_markets_from_json("shared/markets.json")
+
+async def _get_open_interest_per_authority(request: BackendRequest, market_name: Optional[str] = None) -> dict:
     vat = request.state.backend_state.vat
     slot = request.state.backend_state.last_oracle_slot
+
+    selected_market_index = None
+    if market_name and market_name != "All" and market_name in ALL_MARKETS:
+        selected_market_index = ALL_MARKETS[market_name]
 
     oi_per_authority = {} 
 
@@ -23,11 +47,16 @@ async def _get_open_interest_per_authority(request: BackendRequest) -> dict:
 
         current_oi_for_authority = oi_per_authority.get(authority, {
             'total_open_interest_usd': 0.0, 
+            'long_oi_usd': 0.0,
+            'short_oi_usd': 0.0,
             'authority': authority
         })
 
         for position in user_account.perp_positions:
             if position.base_asset_amount == 0:
+                continue
+
+            if selected_market_index is not None and position.market_index != selected_market_index:
                 continue
 
             market_index = position.market_index
@@ -49,6 +78,10 @@ async def _get_open_interest_per_authority(request: BackendRequest) -> dict:
 
                 position_value_usd = (abs(base_asset_amount_val) / (10**decimals)) * oracle_price
                 current_oi_for_authority['total_open_interest_usd'] += position_value_usd
+                if base_asset_amount_val > 0:
+                    current_oi_for_authority['long_oi_usd'] += position_value_usd
+                elif base_asset_amount_val < 0:
+                    current_oi_for_authority['short_oi_usd'] += position_value_usd
             except (TypeError, ValueError) as e:
                 base_val_repr = repr(getattr(position, 'base_asset_amount', 'N/A'))
                 oracle_price_repr = repr(getattr(oracle_price_data, 'price', 'N/A'))
@@ -66,9 +99,13 @@ async def _get_open_interest_per_authority(request: BackendRequest) -> dict:
         "data": result_list, 
     }
 
-async def _get_open_interest_per_account(request: BackendRequest) -> dict:
+async def _get_open_interest_per_account(request: BackendRequest, market_name: Optional[str] = None) -> dict:
     vat = request.state.backend_state.vat
     slot = request.state.backend_state.last_oracle_slot
+
+    selected_market_index = None
+    if market_name and market_name != "All" and market_name in ALL_MARKETS:
+        selected_market_index = ALL_MARKETS[market_name]
 
     oi_per_account = {}
 
@@ -90,6 +127,9 @@ async def _get_open_interest_per_account(request: BackendRequest) -> dict:
 
         for position in user_account.perp_positions:
             if position.base_asset_amount == 0:
+                continue
+
+            if selected_market_index is not None and position.market_index != selected_market_index:
                 continue
 
             market_index = position.market_index
@@ -127,10 +167,14 @@ async def _get_open_interest_per_account(request: BackendRequest) -> dict:
         "data": result_list,
     }
 
-async def _get_open_positions_detailed(request: BackendRequest) -> dict:
+async def _get_open_positions_detailed(request: BackendRequest, market_name: Optional[str] = None) -> dict:
     vat = request.state.backend_state.vat
     slot = request.state.backend_state.last_oracle_slot
     
+    selected_market_index = None
+    if market_name and market_name != "All" and market_name in ALL_MARKETS:
+        selected_market_index = ALL_MARKETS[market_name]
+
     detailed_positions = []
     decimals = 9 # Constant for perpetual markets base asset amount
 
@@ -145,6 +189,9 @@ async def _get_open_positions_detailed(request: BackendRequest) -> dict:
 
         for position in user_account.perp_positions:
             if position.base_asset_amount == 0:
+                continue
+
+            if selected_market_index is not None and position.market_index != selected_market_index:
                 continue
 
             market_index = position.market_index
@@ -194,14 +241,21 @@ async def _get_open_positions_detailed(request: BackendRequest) -> dict:
         "data": sorted_positions,
     }
 
+@router.get("/markets", response_model=List[str])
+async def get_available_markets():
+    """Returns a list of available market names for the dropdown."""
+    if not ALL_MARKETS:
+        return ["All"]
+    return ["All"] + sorted(list(ALL_MARKETS.keys()))
+
 @router.get("/per-authority")
-async def get_open_interest_per_authority(request: BackendRequest):
-    return await _get_open_interest_per_authority(request)
+async def get_open_interest_per_authority(request: BackendRequest, market_name: Optional[str] = Query(None, alias="market_name")):
+    return await _get_open_interest_per_authority(request, market_name)
 
 @router.get("/per-account")
-async def get_open_interest_per_account(request: BackendRequest):
-    return await _get_open_interest_per_account(request)
+async def get_open_interest_per_account(request: BackendRequest, market_name: Optional[str] = Query(None, alias="market_name")):
+    return await _get_open_interest_per_account(request, market_name)
 
 @router.get("/detailed-positions")
-async def get_open_positions_detailed(request: BackendRequest):
-    return await _get_open_positions_detailed(request)
+async def get_open_positions_detailed(request: BackendRequest, market_name: Optional[str] = Query(None, alias="market_name")):
+    return await _get_open_positions_detailed(request, market_name)

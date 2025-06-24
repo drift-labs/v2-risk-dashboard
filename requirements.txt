@@ -9,10 +9,10 @@ pydantic==2.10.6
 solana==0.36.6
 streamlit==1.42.1
 uvicorn==0.34.0
-requests==2.32.3
+requests==2.32.4
 plotly==6.0.0
 anchorpy==0.21.0
-driftpy==0.8.57
+driftpy==0.8.59
 ccxt==4.2.17
 rich>=10.14.0
 aiofiles==24.1.0
