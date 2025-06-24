@@ -11,9 +11,9 @@ from fastapi import FastAPI
 from backend.api import (
     asset_liability,
     backend_health,
-    deposits,
+    deposits_api,
     health,
-    liquidation,
+    liquidation_curves_api,
     market_recommender_api,
     metadata,
     open_interest_api,
@@ -80,14 +80,14 @@ app.add_middleware(CacheMiddleware, state=state, cache_dir="cache")
 app.include_router(health.router, prefix="/api/health", tags=["health"])
 app.include_router(backend_health.router, prefix="/api/backend-health", tags=["backend-health"])
 app.include_router(metadata.router, prefix="/api/metadata", tags=["metadata"])
-app.include_router(liquidation.router, prefix="/api/liquidation", tags=["liquidation"])
+app.include_router(liquidation_curves_api.router, prefix="/api/liquidation-curves", tags=["liquidation-curves"])
 app.include_router(price_shock.router, prefix="/api/price-shock", tags=["price-shock"])
 app.include_router(
     asset_liability.router, prefix="/api/asset-liability", tags=["asset-liability"]
 )
 app.include_router(snapshot.router, prefix="/api/snapshot", tags=["snapshot"])
 app.include_router(ucache.router, prefix="/api/ucache", tags=["ucache"])
-app.include_router(deposits.router, prefix="/api/deposits", tags=["deposits"])
+app.include_router(deposits_api.router, prefix="/api/deposits", tags=["deposits"])
 app.include_router(pnl.router, prefix="/api/pnl", tags=["pnl"])
 app.include_router(vaults.router, prefix="/api/vaults", tags=["vaults"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])

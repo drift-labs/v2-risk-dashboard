@@ -23,6 +23,7 @@ async def get_deposits(request: BackendRequest, market_index: Optional[int] = No
         dict: A dictionary containing deposits with total value and balance info
     """
     vat: Vat = request.state.backend_state.vat
+    last_oracle_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)
     deposits = []
     vaults_program = await get_vaults_program(request.state.backend_state.connection)
     vaults = await vaults_program.account["Vault"].all()
@@ -53,6 +54,7 @@ async def get_deposits(request: BackendRequest, market_index: Optional[int] = No
 
     deposits.sort(key=lambda x: x["value"], reverse=True)
     return {
+        "slot": last_oracle_slot,
         "deposits": deposits,
         "vaults": vault_pubkeys,
         "total_value": sum(d["value"] for d in deposits),
