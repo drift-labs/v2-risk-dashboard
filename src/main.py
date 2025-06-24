@@ -13,12 +13,12 @@ from page.backend import backend_page
 from page.deposits_page import deposits_page
 from page.health import health_page
 from page.liquidation_curves_page import liquidation_curves_page
-from page.market_inspector import market_inspector_page
+from page.market_inspector_page import market_inspector_page
 from page.orderbook import orderbook_page
-from page.pnl import pnl_page
+from page.pnl_page import pnl_page
 from page.price_shock import price_shock_cached_page
 from page.swap import show as swap_page
-from page.vaults import vaults_page
+from page.vaults_page import vaults_page
 from page.welcome import welcome_page
 from page.market_recommender_page import market_recommender_page
 from page.open_interest_page import open_interest_page

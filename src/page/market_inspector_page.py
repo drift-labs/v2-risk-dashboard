@@ -6,7 +6,7 @@ import streamlit as st
 import inspect
 import pandas as pd
 
-from anchorpy import Wallet
+from anchorpy.provider import Wallet
 from dotenv import load_dotenv
 from driftpy.drift_client import DriftClient
 from driftpy.market_map.market_map import MarketMap
@@ -30,7 +30,7 @@ def format_pubkey(pubkey: str) -> str:
     """Truncate pubkey for display."""
     return f"{str(pubkey)[:10]}...{str(pubkey)[-10:]}"
 
-def format_number(number: int, decimals=6) -> str:
+def format_number(number: int | float, decimals=6) -> str:
     """Format large numbers for better readability."""
     return f"{number / (10 ** decimals):,.6f}"
 
@@ -146,7 +146,7 @@ def display_attribute(market_data, attr_path: str, debug_mode: bool = False):
 
     # If it's a Pubkey or similar
     if hasattr(val, '__class__') and val.__class__.__name__ == 'Pubkey':
-        return f"{attr_path}: {format_pubkey(val)}"
+        return f"{attr_path}: {format_pubkey(str(val))}"
 
     # If it's an int that might represent a 'price' or 'reserve'
     if isinstance(val, int):
@@ -201,7 +201,7 @@ def format_complex_object(attr_name, obj):
                 if isinstance(attr_val, (int, float)) and any(x in attr_name.lower() for x in ["price", "amount", "balance"]):
                     formatted_value = format_number(attr_val, 6)
                 elif hasattr(attr_val, '__class__') and attr_val.__class__.__name__ == 'Pubkey':
-                    formatted_value = format_pubkey(attr_val)
+                    formatted_value = format_pubkey(str(attr_val))
                 else:
                     formatted_value = str(attr_val)
                 result.append(f"  • {attr_name}: {formatted_value}")
@@ -228,7 +228,7 @@ def format_complex_object(attr_name, obj):
         if isinstance(value, (int, float)) and any(x in name.lower() for x in ["price", "amount", "balance"]):
             formatted_value = format_number(value, 6)
         elif hasattr(value, '__class__') and value.__class__.__name__ == 'Pubkey':
-            formatted_value = format_pubkey(value)
+            formatted_value = format_pubkey(str(value))
         elif (hasattr(value, '__class__')
               and not isinstance(value, (str, int, float, bool, list, dict))
               and hasattr(value, '__dict__')):
@@ -278,7 +278,7 @@ async def _fetch_market_maps():
     perp_market_map = MarketMap(
         MarketMapConfig(
             drift_client.program,
-            MarketType.Perp(),
+            MarketType.Perp(),  # type: ignore
             WebsocketConfig(resub_timeout_ms=10000),
             connection,
         )
@@ -289,7 +289,7 @@ async def _fetch_market_maps():
     spot_market_map = MarketMap(
         MarketMapConfig(
             drift_client.program,
-            MarketType.Spot(),
+            MarketType.Spot(),  # type: ignore
             WebsocketConfig(resub_timeout_ms=10000),
             connection,
         )

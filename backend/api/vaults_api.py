@@ -20,6 +20,7 @@ async def get_vault_data(request: BackendRequest):
 
     client = await create_vault_client()
     analytics = await client.calculate_analytics()
+    last_oracle_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)
 
     vaults = []
     print(analytics["vaults"][0])
@@ -60,5 +61,6 @@ async def get_vault_data(request: BackendRequest):
         vault_depositors[vault_info["pubkey"]] = serializable_depositors
 
     return {
-        "data": {"analytics": serializable_analytics, "depositors": vault_depositors}
+        "data": {"analytics": serializable_analytics, "depositors": vault_depositors},
+        "slot": last_oracle_slot,
     }

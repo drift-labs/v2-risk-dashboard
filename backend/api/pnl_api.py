@@ -9,6 +9,7 @@ router = APIRouter()
 @router.get("/top_pnl")
 def get_top_pnl(request: BackendRequest, limit: int = 1000):
     vat: Vat = request.state.backend_state.vat
+    last_oracle_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)
 
     pnl_data = []
     for user in vat.users.values():
@@ -32,4 +33,4 @@ def get_top_pnl(request: BackendRequest, limit: int = 1000):
             continue
 
     pnl_data.sort(key=lambda x: x["total_pnl"], reverse=True)
-    return pnl_data[:limit]
+    return {"pnl": pnl_data[:limit], "slot": last_oracle_slot}

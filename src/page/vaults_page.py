@@ -1,7 +1,23 @@
 import pandas as pd
 import streamlit as st
+import time
 
 from lib.api import fetch_api_data
+from src.utils import get_current_slot
+
+RETRY_DELAY_SECONDS = 10
+
+
+def is_processing(result):
+    """Checks if the API result indicates backend processing."""
+    return isinstance(result, dict) and result.get("result") == "processing"
+
+
+def has_error(result):
+    """Checks if the API result indicates an error."""
+    return result is None or (
+        isinstance(result, dict) and result.get("result") == "error"
+    ) or ("data" not in result if isinstance(result, dict) else False)
 
 
 def vaults_page():
@@ -11,15 +27,37 @@ def vaults_page():
         "This page may be out of date up to 30 minutes."
     )
 
-    with st.spinner("Loading vault data..."):
-        response = fetch_api_data("vaults", "data", retry=True, max_wait_time=60)
-        if not response or "data" not in response:
-            st.error("Failed to load vault data")
-            return
+    response = fetch_api_data("vaults", "data", retry=False)
 
-        data = response["data"]
-        analytics = data["analytics"]
-        all_depositors = data["depositors"]
+    if is_processing(response):
+        st.info(
+            f"Backend is processing vault data. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds..."
+        )
+        with st.spinner("Please wait..."):
+            time.sleep(RETRY_DELAY_SECONDS)
+        st.rerun()
+        return
+
+    if has_error(response):
+        error_msg = "Invalid response from backend."
+        if isinstance(response, dict) and "message" in response:
+            error_msg = response["message"]
+        elif has_error(response):
+            error_msg = "Could not connect or fetch vault data."
+        st.error(f"Failed to load vault data: {error_msg}")
+        if st.button("Retry"):
+            st.rerun()
+        return
+
+    slot = response.get("slot", 0)
+    current_slot = get_current_slot()
+    if slot > 0 and current_slot > 0:
+        slot_age = current_slot - slot
+        st.info(f"Data from slot {slot}, which is {slot_age} slots old.")
+
+    data = response["data"]
+    analytics = data["analytics"]
+    all_depositors = data["depositors"]
 
     unique_depositors = set()
     for depositors in all_depositors.values():
@@ -60,10 +98,21 @@ def vaults_page():
 
     st.subheader("Vault Depositor Details")
 
+    all_vaults_df_indexed = all_vaults_df.set_index("pubkey")
+
+    def format_vault_option(pubkey: str) -> str:
+        try:
+            vault_info = all_vaults_df_indexed.loc[pubkey]
+            name = vault_info["name"]
+            net_deposits = vault_info["true_net_deposits"]
+            return f"{name} (${net_deposits:,.2f} USD) - {pubkey[:4]}...{pubkey[-4:]}"
+        except KeyError:
+            return f"Unknown Vault - {pubkey[:4]}...{pubkey[-4:]}"
+
     selected_vault = st.selectbox(
         "Select Vault",
-        [vault["pubkey"] for vault in all_vaults_df.to_dict(orient="records")],
-        format_func=lambda x: f"{all_vaults_df[all_vaults_df['pubkey'] == x]['name'].values[0]} (${all_vaults_df[all_vaults_df['pubkey'] == x]['true_net_deposits'].values[0]:,.2f} USD) - {x[:4]}...{x[-4:]}",
+        all_vaults_df["pubkey"].tolist(),
+        format_func=format_vault_option,
     )
 
     if selected_vault:
