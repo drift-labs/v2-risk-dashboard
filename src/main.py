@@ -13,7 +13,7 @@ from page.backend import backend_page
 from page.deposits_page import deposits_page
 from page.health import health_page
 from page.liquidation_curves_page import liquidation_curves_page
-from page.market_inspector import market_inspector_page
+from page.market_inspector_page import market_inspector_page
 from page.orderbook import orderbook_page
 from page.pnl_page import pnl_page
 from page.price_shock import price_shock_cached_page
