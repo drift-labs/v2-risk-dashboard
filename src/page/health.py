@@ -381,8 +381,7 @@ def health_page():
                 )
             
             # Check if there are any error messages in the data
-            has_errors = 'Error' in levered_spot_df.columns and levered_spot_df['Error'].any()
-            if has_errors:
+            if 'Error' in levered_spot_df.columns:
                 error_records = levered_spot_df[levered_spot_df['Error'].notna() & (levered_spot_df['Error'] != '')]
                 if not error_records.empty:
                     st.warning(f"Found {len(error_records)} positions with errors. Please check with the team.")

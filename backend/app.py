@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from backend.api import (
     asset_liability,
     backend_health,
-    deposits,
+    deposits_api,
     health,
     liquidation,
     market_recommender_api,
@@ -87,7 +87,7 @@ app.include_router(
 )
 app.include_router(snapshot.router, prefix="/api/snapshot", tags=["snapshot"])
 app.include_router(ucache.router, prefix="/api/ucache", tags=["ucache"])
-app.include_router(deposits.router, prefix="/api/deposits", tags=["deposits"])
+app.include_router(deposits_api.router, prefix="/api/deposits", tags=["deposits"])
 app.include_router(pnl.router, prefix="/api/pnl", tags=["pnl"])
 app.include_router(vaults.router, prefix="/api/vaults", tags=["vaults"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])

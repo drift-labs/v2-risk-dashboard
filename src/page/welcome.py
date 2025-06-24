@@ -31,7 +31,7 @@ def welcome_page():
         label="💧 **Liquidations** - Explore liquidation curves and potential risks",
     )
     st.page_link(
-        StreamlitPage("page/deposits.py", url_path="deposits"),
+        StreamlitPage("page/deposits_page.py", url_path="deposits"),
         label="💰 **Deposits** - Track total deposits across all the protocol",
     )
     st.page_link(

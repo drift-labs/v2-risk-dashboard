@@ -1,14 +1,24 @@
 import pandas as pd
 import streamlit as st
 import logging
+import time
 from typing import Optional
 from driftpy.constants.spot_markets import mainnet_spot_market_configs
 
 from lib.api import fetch_api_data
+from src.utils import get_current_slot
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def is_processing(result):
+    """Checks if the API result indicates backend processing."""
+    return isinstance(result, dict) and result.get("result") == "processing"
+
+def has_error(result):
+    """Checks if the API result indicates an error."""
+    return isinstance(result, dict) and "error" in result
 
 def format_authority(authority: str) -> str:
     """Format authority to show first and last 4 chars"""
@@ -42,6 +52,9 @@ def get_market_symbol(market_index: int) -> str:
 
 def deposits_page():
     try:
+        # Explicitly type hint as DataFrame
+        df: pd.DataFrame = pd.DataFrame()
+        
         params = st.query_params
         market_index = int(params.get("market_index", 0))
 
@@ -87,10 +100,26 @@ def deposits_page():
                 retry=True,
             )
 
+        if is_processing(result):
+            st.info("Backend is initializing data. Please wait.")
+            with st.spinner("Auto-refreshing in 10 seconds..."):
+                time.sleep(10)
+            st.rerun()
+            return
+            
+        if has_error(result):
+            st.error(f"An error occurred: {result.get('error', 'Unknown error')}")
+            return
+            
         if result is None:
             logger.error("API returned no deposits data")
             st.error("No deposits found")
             return
+
+        slot = result.get("slot", 0)
+        current_slot = get_current_slot()
+        slot_age = current_slot - slot
+        st.info(f"Data from slot {slot}, which is {slot_age} slots old.")
 
         df = pd.DataFrame(result["deposits"])
         if df.empty:
@@ -104,7 +133,7 @@ def deposits_page():
 
         if exclude_vaults:
             original_len = len(df)
-            df = df[~df["authority"].isin(result["vaults"])]
+            df = df.loc[~df["authority"].isin(result["vaults"])]
             logger.info(f"Excluded {original_len - len(df)} vault entries")
 
         with col1:
@@ -119,7 +148,7 @@ def deposits_page():
         tabs = st.tabs(["By Position", "By Authority"])
 
         with tabs[0]:
-            filtered_df = df[df["balance"] >= min_balance]
+            filtered_df: pd.DataFrame = df.loc[df["balance"] >= min_balance].copy()
             st.write(f"Total deposits value: **${filtered_df['value'].sum():,.2f}**")
             st.write(f"Number of depositor user accounts: **{len(filtered_df):,}**")
 
@@ -133,7 +162,8 @@ def deposits_page():
             )
             
             # Safely map market indices to symbols
-            filtered_df["market_index"] = filtered_df["market_index"].map(get_market_symbol)
+            if not filtered_df.empty:
+                filtered_df["market_index"] = filtered_df["market_index"].map(get_market_symbol)
 
             st.dataframe(
                 filtered_df.sort_values("value", ascending=False),
@@ -164,7 +194,7 @@ def deposits_page():
                 .agg({"value": "sum", "balance": "sum", "user_account": "count"})
                 .reset_index()
             )
-            grouped_df = grouped_df[grouped_df["value"] >= min_balance]
+            grouped_df: pd.DataFrame = grouped_df.loc[grouped_df["value"] >= min_balance].copy()
             st.write(f"Total deposits value: **${grouped_df['value'].sum():,.2f}**")
             st.write(f"Total number of authorities with deposits: **{len(grouped_df):,}**")
             grouped_df = grouped_df.rename(columns={"user_account": "num_accounts"})
