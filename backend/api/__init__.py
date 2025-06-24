@@ -4,7 +4,7 @@ from . import (
     deposits_api,
     health,
     high_leverage_api,
-    liquidation,
+    liquidation_curves_api,
     market_recommender_api,
     metadata,
     open_interest_api,

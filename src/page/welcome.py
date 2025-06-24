@@ -27,7 +27,7 @@ def welcome_page():
     )
 
     st.page_link(
-        StreamlitPage("page/liquidation_curves.py", url_path="liquidation-curves"),
+        StreamlitPage("page/liquidation_curves_page.py", url_path="liquidation-curves"),
         label="💧 **Liquidations** - Explore liquidation curves and potential risks",
     )
     st.page_link(

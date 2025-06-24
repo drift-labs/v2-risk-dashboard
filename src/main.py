@@ -12,7 +12,7 @@ from page.asset_liability import asset_liab_matrix_cached_page
 from page.backend import backend_page
 from page.deposits_page import deposits_page
 from page.health import health_page
-from page.liquidation_curves import liquidation_curves_page
+from page.liquidation_curves_page import liquidation_curves_page
 from page.market_inspector import market_inspector_page
 from page.orderbook import orderbook_page
 from page.pnl import pnl_page

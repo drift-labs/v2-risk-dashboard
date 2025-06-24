@@ -13,7 +13,7 @@ from backend.api import (
     backend_health,
     deposits_api,
     health,
-    liquidation,
+    liquidation_curves_api,
     market_recommender_api,
     metadata,
     open_interest_api,
@@ -80,7 +80,7 @@ app.add_middleware(CacheMiddleware, state=state, cache_dir="cache")
 app.include_router(health.router, prefix="/api/health", tags=["health"])
 app.include_router(backend_health.router, prefix="/api/backend-health", tags=["backend-health"])
 app.include_router(metadata.router, prefix="/api/metadata", tags=["metadata"])
-app.include_router(liquidation.router, prefix="/api/liquidation", tags=["liquidation"])
+app.include_router(liquidation_curves_api.router, prefix="/api/liquidation-curves", tags=["liquidation-curves"])
 app.include_router(price_shock.router, prefix="/api/price-shock", tags=["price-shock"])
 app.include_router(
     asset_liability.router, prefix="/api/asset-liability", tags=["asset-liability"]

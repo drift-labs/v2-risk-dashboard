@@ -1,5 +1,6 @@
 from collections import defaultdict
 from typing import List, Tuple, TypedDict
+import time
 
 import numpy as np
 import plotly.graph_objects as go
@@ -7,11 +8,26 @@ import streamlit as st
 from driftpy.constants.perp_markets import mainnet_perp_market_configs
 
 from lib.api import fetch_api_data
+from src.utils import get_current_slot
+
+RETRY_DELAY_SECONDS = 5
 
 
 class PriceData(TypedDict):
     notional: float
     positions: List[Tuple[str, float]]
+
+
+def is_processing(result):
+    """Checks if the API result indicates backend processing."""
+    return isinstance(result, dict) and result.get("result") == "processing"
+
+
+def has_error(result):
+    """Checks if the API result indicates an error or is missing essential data."""
+    return result is None or (
+        isinstance(result, dict) and "liquidations_long" not in result
+    )
 
 
 def plot_liquidation_curves(liquidation_data):
@@ -133,22 +149,35 @@ def liquidation_curves_page():
     liquidation_data = None
     try:
         liquidation_data = fetch_api_data(
-            "liquidation",
-            "liquidation-curve",
+            "liquidation-curves",
+            "liquidation-curves",
             params=dict(st.query_params),
-            retry=True,
+            retry=False,
         )
     except Exception as e:
         st.write(e)
         st.stop()
 
-    if liquidation_data is None:
-        st.write("Fetching data for the first time...")
-        st.image(
-            "https://i.gifer.com/origin/8a/8a47f769c400b0b7d81a8f6f8e09a44a_w200.gif"
+    if is_processing(liquidation_data):
+        st.info(
+            f"Backend is processing liquidation data. Auto-refreshing in {RETRY_DELAY_SECONDS} seconds..."
         )
+        with st.spinner("Please wait..."):
+            time.sleep(RETRY_DELAY_SECONDS)
+        st.rerun()
+        return
+
+    if has_error(liquidation_data):
+        st.write("Fetching data for the first time...")
+        st.image("images/pacman.gif")
         st.write("Check again in one minute!")
         st.stop()
+
+    # Display slot age information
+    slot = liquidation_data.get("slot", 0)
+    current_slot = get_current_slot()
+    slot_age = current_slot - slot
+    st.info(f"Data from slot {slot}, which is {slot_age} slots old.")
 
     (
         long_fig,
