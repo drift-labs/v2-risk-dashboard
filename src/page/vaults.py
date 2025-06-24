@@ -60,10 +60,21 @@ def vaults_page():
 
     st.subheader("Vault Depositor Details")
 
+    all_vaults_df_indexed = all_vaults_df.set_index("pubkey")
+
+    def format_vault_option(pubkey: str) -> str:
+        try:
+            vault_info = all_vaults_df_indexed.loc[pubkey]
+            name = vault_info["name"]
+            net_deposits = vault_info["true_net_deposits"]
+            return f"{name} (${net_deposits:,.2f} USD) - {pubkey[:4]}...{pubkey[-4:]}"
+        except KeyError:
+            return f"Unknown Vault - {pubkey[:4]}...{pubkey[-4:]}"
+
     selected_vault = st.selectbox(
         "Select Vault",
-        [vault["pubkey"] for vault in all_vaults_df.to_dict(orient="records")],
-        format_func=lambda x: f"{all_vaults_df[all_vaults_df['pubkey'] == x]['name'].values[0]} (${all_vaults_df[all_vaults_df['pubkey'] == x]['true_net_deposits'].values[0]:,.2f} USD) - {x[:4]}...{x[-4:]}",
+        all_vaults_df["pubkey"].tolist(),
+        format_func=format_vault_option,
     )
 
     if selected_vault:
