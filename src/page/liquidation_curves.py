@@ -1,4 +1,5 @@
 from collections import defaultdict
+from typing import List, Tuple, TypedDict
 
 import numpy as np
 import plotly.graph_objects as go
@@ -6,6 +7,11 @@ import streamlit as st
 from driftpy.constants.perp_markets import mainnet_perp_market_configs
 
 from lib.api import fetch_api_data
+
+
+class PriceData(TypedDict):
+    notional: float
+    positions: List[Tuple[str, float]]
 
 
 def plot_liquidation_curves(liquidation_data):
@@ -27,7 +33,9 @@ def plot_liquidation_curves(liquidation_data):
 
     def aggregate_liquidations(liquidations):
         """Aggregate liquidations to calculate cumulative notional amounts and track pubkeys with their sizes."""
-        price_to_data = defaultdict(lambda: {"notional": 0.0, "positions": []})
+        price_to_data: defaultdict[float, PriceData] = defaultdict(
+            lambda: {"notional": 0.0, "positions": []}
+        )
         for price, notional, pubkey in liquidations:
             price_to_data[price]["notional"] += notional
             price_to_data[price]["positions"].append((pubkey, notional))
@@ -127,7 +135,7 @@ def liquidation_curves_page():
         liquidation_data = fetch_api_data(
             "liquidation",
             "liquidation-curve",
-            params=params,
+            params=dict(st.query_params),
             retry=True,
         )
     except Exception as e:
@@ -158,84 +166,86 @@ def liquidation_curves_page():
         None,
     )
 
-    if long_prices is None:
+    if long_prices is None or short_prices is None:
         st.write("No liquidation data available")
         st.stop()
+    else:
+        long_col, short_col = st.columns([1, 1])
 
-    long_col, short_col = st.columns([1, 1])
+        with long_col:
+            st.plotly_chart(long_fig, use_container_width=True)
 
-    with long_col:
-        st.plotly_chart(long_fig, use_container_width=True)
+            with st.expander("Long Position Accounts"):
+                if long_pubkeys and len(long_pubkeys[-1]) > 0:
+                    st.write(f"Total Accounts: {len(long_pubkeys[-1])}")
+                    long_data = []
+                    for i, positions in enumerate(long_pubkeys):
+                        if i > 0:
+                            new_positions = set(positions) - set(long_pubkeys[i - 1])
+                            if new_positions:
+                                for pubkey, size in new_positions:
+                                    long_data.append(
+                                        {
+                                            "Price": f"{long_prices[i]:.2f}",
+                                            "Size": f"{size:,.2f}",
+                                            "Account": pubkey,
+                                            "Link": f"https://app.drift.trade/overview?userAccount={pubkey}",
+                                        }
+                                    )
+                    if long_data:
+                        st.dataframe(
+                            long_data,
+                            column_config={
+                                "Price": st.column_config.TextColumn("Price"),
+                                "Size": st.column_config.TextColumn("Size"),
+                                "Account": st.column_config.TextColumn(
+                                    "Account", width="large"
+                                ),
+                                "Link": st.column_config.LinkColumn(
+                                    "Link", display_text="View"
+                                ),
+                            },
+                            hide_index=True,
+                        )
+                else:
+                    st.write("No long positions found")
 
-        with st.expander("Long Position Accounts"):
-            if long_pubkeys and len(long_pubkeys[-1]) > 0:
-                st.write(f"Total Accounts: {len(long_pubkeys[-1])}")
-                long_data = []
-                for i, positions in enumerate(long_pubkeys):
-                    if i > 0:
-                        new_positions = set(positions) - set(long_pubkeys[i - 1])
-                        if new_positions:
-                            for pubkey, size in new_positions:
-                                long_data.append(
-                                    {
-                                        "Price": f"{long_prices[i]:.2f}",
-                                        "Size": f"{size:,.2f}",
-                                        "Account": pubkey,
-                                        "Link": f"https://app.drift.trade/overview?userAccount={pubkey}",
-                                    }
-                                )
-                if long_data:
-                    st.dataframe(
-                        long_data,
-                        column_config={
-                            "Price": st.column_config.TextColumn("Price"),
-                            "Size": st.column_config.TextColumn("Size"),
-                            "Account": st.column_config.TextColumn(
-                                "Account", width="large"
-                            ),
-                            "Link": st.column_config.LinkColumn(
-                                "Link", display_text="View"
-                            ),
-                        },
-                        hide_index=True,
-                    )
-            else:
-                st.write("No long positions found")
+        with short_col:
+            st.plotly_chart(short_fig, use_container_width=True)
 
-    with short_col:
-        st.plotly_chart(short_fig, use_container_width=True)
-
-        with st.expander("Short Position Accounts"):
-            if short_pubkeys and len(short_pubkeys[-1]) > 0:
-                st.write(f"Total Accounts: {len(short_pubkeys[-1])}")
-                short_data = []
-                for i, positions in enumerate(short_pubkeys):
-                    if i > 0:
-                        new_positions = set(positions) - set(short_pubkeys[i - 1])
-                        if new_positions:
-                            for pubkey, size in new_positions:
-                                short_data.append(
-                                    {
-                                        "Price": f"{short_prices[i]:.2f}",
-                                        "Size": f"{size:,.2f}",
-                                        "Account": pubkey,
-                                        "Link": f"https://app.drift.trade/overview?userAccount={pubkey}",
-                                    }
-                                )
-                if short_data:
-                    st.dataframe(
-                        short_data,
-                        column_config={
-                            "Price": st.column_config.TextColumn("Price"),
-                            "Size": st.column_config.TextColumn("Size"),
-                            "Account": st.column_config.TextColumn(
-                                "Account", width="large"
-                            ),
-                            "Link": st.column_config.LinkColumn(
-                                "Link", display_text="View"
-                            ),
-                        },
-                        hide_index=True,
-                    )
-            else:
-                st.write("No short positions found")
+            with st.expander("Short Position Accounts"):
+                if short_pubkeys and len(short_pubkeys[-1]) > 0:
+                    st.write(f"Total Accounts: {len(short_pubkeys[-1])}")
+                    short_data = []
+                    for i, positions in enumerate(short_pubkeys):
+                        if i > 0:
+                            new_positions = set(positions) - set(
+                                short_pubkeys[i - 1]
+                            )
+                            if new_positions:
+                                for pubkey, size in new_positions:
+                                    short_data.append(
+                                        {
+                                            "Price": f"{short_prices[i]:.2f}",
+                                            "Size": f"{size:,.2f}",
+                                            "Account": pubkey,
+                                            "Link": f"https://app.drift.trade/overview?userAccount={pubkey}",
+                                        }
+                                    )
+                    if short_data:
+                        st.dataframe(
+                            short_data,
+                            column_config={
+                                "Price": st.column_config.TextColumn("Price"),
+                                "Size": st.column_config.TextColumn("Size"),
+                                "Account": st.column_config.TextColumn(
+                                    "Account", width="large"
+                                ),
+                                "Link": st.column_config.LinkColumn(
+                                    "Link", display_text="View"
+                                ),
+                            },
+                            hide_index=True,
+                        )
+                else:
+                    st.write("No short positions found")
