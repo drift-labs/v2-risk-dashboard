@@ -17,12 +17,12 @@ from backend.api import (
     market_recommender_api,
     metadata,
     open_interest_api,
-    pnl,
+    pnl_api,
     positions,
     price_shock,
     snapshot,
     ucache,
-    vaults,
+    vaults_api,
     high_leverage_api,
     user_retention_summary_api,
     user_retention_explorer_api,
@@ -88,8 +88,8 @@ app.include_router(
 app.include_router(snapshot.router, prefix="/api/snapshot", tags=["snapshot"])
 app.include_router(ucache.router, prefix="/api/ucache", tags=["ucache"])
 app.include_router(deposits_api.router, prefix="/api/deposits", tags=["deposits"])
-app.include_router(pnl.router, prefix="/api/pnl", tags=["pnl"])
-app.include_router(vaults.router, prefix="/api/vaults", tags=["vaults"])
+app.include_router(pnl_api.router, prefix="/api/pnl", tags=["pnl"])
+app.include_router(vaults_api.router, prefix="/api/vaults", tags=["vaults"])
 app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
 app.include_router(market_recommender_api.router, prefix="/api/market-recommender", tags=["market-recommender"])
 app.include_router(open_interest_api.router, prefix="/api/open-interest", tags=["open-interest"])

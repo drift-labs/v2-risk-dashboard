@@ -35,7 +35,7 @@ def welcome_page():
         label="💰 **Deposits** - Track total deposits across all the protocol",
     )
     st.page_link(
-        StreamlitPage("page/pnl.py", url_path="pnl"),
+        StreamlitPage("page/pnl_page.py", url_path="pnl"),
         label="💸 **PnL** - Track top trader PnLs",
     )
 
