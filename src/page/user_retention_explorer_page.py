@@ -121,6 +121,31 @@ def user_retention_explorer_page():
         elif isinstance(result, dict) and "user_data" in result:
             st.header("Analysis Results")
 
+            # --- Display Summary Metrics ---
+            st.subheader("High-Level Volume Metrics")
+            metric_cols = st.columns(4)
+            metric_cols[0].metric(
+                "ISMV7d",
+                f"${result.get('total_initial_selected_market_volume_7d', 0):,.0f}",
+                help="Initial Selected Market Volume (7d): Total volume in the selected market from new traders during their first 7 days."
+            )
+            metric_cols[1].metric(
+                "IOMV7d",
+                f"${result.get('total_initial_other_market_volume_7d', 0):,.0f}",
+                help="Initial Other Market Volume (7d): Total volume in all other markets from new traders during their first 7 days."
+            )
+            metric_cols[2].metric(
+                "TV14d",
+                f"${result.get('total_volume_14d', 0):,.0f}",
+                help="Total Volume (14d): Total volume from the cohort during the 14-day retention period (Days 8-21)."
+            )
+            metric_cols[3].metric(
+                "TV28d",
+                f"${result.get('total_volume_28d', 0):,.0f}",
+                help="Total Volume (28d): Total volume from the cohort during the 28-day retention period (Days 8-35)."
+            )
+
+            st.subheader("Retention Summary")
             df_data = {
                 'Metric': [
                     "Market", "Category", "Analysis Start Date", "New Traders (Count)", 

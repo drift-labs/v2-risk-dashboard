@@ -2,7 +2,7 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Tuple, Set, Optional, Any
+from typing import Callable, Dict, List, Tuple, Set, Optional, Any
 
 import pandas as pd
 from dateutil import tz, parser
@@ -84,6 +84,10 @@ class RetentionExplorerItem(BaseModel):
     retention_ratio_14d: float
     retention_ratio_28d: float
     user_data: List[UserVolumeDetails]
+    total_initial_selected_market_volume_7d: float
+    total_initial_other_market_volume_7d: float
+    total_volume_14d: float
+    total_volume_28d: float
 
 UTC = tz.tzutc()
 
@@ -142,7 +146,7 @@ def sql_users_volume(
     users: List[str],
     start_dt: datetime,
     end_dt: datetime,
-    partition_func: callable,
+    partition_func: Callable[[Set[Tuple[str, str, str]]], str],
     market_index: Optional[int] = None,
     exclude_market_index: Optional[int] = None
 ) -> str:
@@ -219,11 +223,15 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
             return {
                 "market": market_name, "category": market_config.get("category", []), "start_date": start_date_str,
                 "new_traders_count": 0, "retained_14d_count": 0, "retained_28d_count": 0,
-                "retention_ratio_14d": 0.0, "retention_ratio_28d": 0.0, "user_data": []
+                "retention_ratio_14d": 0.0, "retention_ratio_28d": 0.0, "user_data": [],
+                "total_initial_selected_market_volume_7d": 0.0,
+                "total_initial_other_market_volume_7d": 0.0,
+                "total_volume_14d": 0.0,
+                "total_volume_28d": 0.0,
             }
 
         # --- Volume Calculation ---
-        traders_df = pd.DataFrame(mkt_traders, columns=['user'])
+        traders_df = pd.DataFrame({"user": mkt_traders})
 
         # Define time windows
         initial_window_end = start_date + timedelta(days=NEW_TRADER_WINDOW_DAYS)
@@ -240,6 +248,9 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
             
             vol_df = pd.read_sql(vol_sql, conn)
             merged_df = base_df.merge(vol_df, on='user', how='left')
+            
+            # Explicitly convert to numeric to avoid FutureWarning on downcasting
+            merged_df['total_volume'] = pd.to_numeric(merged_df['total_volume'], errors='coerce')
             merged_df['total_volume'] = merged_df['total_volume'].fillna(0)
             return merged_df.rename(columns={'total_volume': column_name})
 
@@ -252,6 +263,12 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
         traders_df = get_and_merge_volume(traders_df, 'other_market_volume_28d', initial_window_end, retention_28d_end, exclude_m_idx=mkt_idx)
         
         traders_df = traders_df.rename(columns={'user': 'user_address'})
+
+        # --- Summary Volume Metrics ---
+        total_initial_selected_market_volume_7d = traders_df['initial_selected_market_volume'].sum()
+        total_initial_other_market_volume_7d = traders_df['initial_other_market_volume'].sum()
+        total_volume_14d = (traders_df['selected_market_volume_14d'] + traders_df['other_market_volume_14d']).sum()
+        total_volume_28d = (traders_df['selected_market_volume_28d'] + traders_df['other_market_volume_28d']).sum()
 
         # --- Summary Statistics ---
         retained_14d_count = int((traders_df['other_market_volume_14d'] > 0).sum())
@@ -268,7 +285,11 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
             "retained_28d_count": retained_28d_count,
             "retention_ratio_14d": round(retention_ratio_14d, 4),
             "retention_ratio_28d": round(retention_ratio_28d, 4),
-            "user_data": traders_df.to_dict('records')
+            "user_data": traders_df.to_dict('records'),
+            "total_initial_selected_market_volume_7d": float(total_initial_selected_market_volume_7d),
+            "total_initial_other_market_volume_7d": float(total_initial_other_market_volume_7d),
+            "total_volume_14d": float(total_volume_14d),
+            "total_volume_28d": float(total_volume_28d),
         }
             
         logger.info(f"Successfully calculated consolidated retention for {market_name}.")
