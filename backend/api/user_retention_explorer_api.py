@@ -2,7 +2,7 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Tuple, Set, Optional, Any
+from typing import Callable, Dict, List, Tuple, Set, Optional, Any
 
 import pandas as pd
 from dateutil import tz, parser
@@ -142,7 +142,7 @@ def sql_users_volume(
     users: List[str],
     start_dt: datetime,
     end_dt: datetime,
-    partition_func: callable,
+    partition_func: Callable[[Set[Tuple[str, str, str]]], str],
     market_index: Optional[int] = None,
     exclude_market_index: Optional[int] = None
 ) -> str:
@@ -223,7 +223,7 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
             }
 
         # --- Volume Calculation ---
-        traders_df = pd.DataFrame(mkt_traders, columns=['user'])
+        traders_df = pd.DataFrame({"user": mkt_traders})
 
         # Define time windows
         initial_window_end = start_date + timedelta(days=NEW_TRADER_WINDOW_DAYS)
