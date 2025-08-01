@@ -16,4 +16,5 @@ from . import (
     user_retention_explorer_api,
     user_retention_summary_api,
     vaults_api,
+    wallet_activity_api,
 )

@@ -12,19 +12,20 @@ from page.asset_liability import asset_liab_matrix_cached_page
 from page.backend import backend_page
 from page.deposits_page import deposits_page
 from page.health import health_page
+from page.high_leverage_page import high_leverage_page
 from page.liquidation_curves_page import liquidation_curves_page
 from page.market_inspector_page import market_inspector_page
+from page.market_recommender_page import market_recommender_page
+from page.open_interest_page import open_interest_page
 from page.orderbook import orderbook_page
 from page.pnl_page import pnl_page
 from page.price_shock import price_shock_cached_page
 from page.swap import show as swap_page
-from page.vaults_page import vaults_page
-from page.welcome import welcome_page
-from page.market_recommender_page import market_recommender_page
-from page.open_interest_page import open_interest_page
-from page.high_leverage_page import high_leverage_page
-from page.user_retention_summary_page import user_retention_summary_page
 from page.user_retention_explorer_page import user_retention_explorer_page
+from page.user_retention_summary_page import user_retention_summary_page
+from page.vaults_page import vaults_page
+from page.wallet_activity_page import wallet_activity_page
+from page.welcome import welcome_page
 
 load_dotenv()
 
@@ -162,6 +163,12 @@ if __name__ == "__main__":
             url_path="user-retention-explorer",
             title="User Retention Explorer",
             icon="🔍",
+        ),
+        st.Page(
+            needs_backend(wallet_activity_page),
+            url_path="wallet-activity",
+            title="Wallet Activity",
+            icon="👛",
         ),
     ]
 

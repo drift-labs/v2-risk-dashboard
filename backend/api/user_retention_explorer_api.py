@@ -1,37 +1,41 @@
-# This new API endpoint will allow for dynamic exploration of user retention for a single market and custom date.
-
-import os
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, List, Tuple, Set, Optional, Any
-
-import pandas as pd
-from dateutil import tz, parser
-from pyathena import connect
-import warnings
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-import logging
 import json
+import logging
+import os
+import warnings
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import boto3
+import pandas as pd
+from dateutil import parser, tz
+from fastapi import APIRouter, HTTPException, Query
+from pyathena import connect
+from pydantic import BaseModel
+
 
 def load_markets_from_json(file_path: str) -> Dict[str, Dict[str, Any]]:
     """Loads market data from a JSON file and formats it for the API."""
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             markets_data = json.load(f)
-        
+
         formatted_markets = {}
         for market in markets_data:
             formatted_markets[market["marketName"]] = {
                 "index": market["marketIndex"],
-                "launch_ts": market["launchTs"], # Keep original launch_ts for reference if needed
-                "category": market["category"]
+                "launch_ts": market[
+                    "launchTs"
+                ],  # Keep original launch_ts for reference if needed
+                "category": market["category"],
             }
-        logger.info(f"Successfully loaded and formatted {len(formatted_markets)} markets from {file_path}")
+        logger.info(
+            f"Successfully loaded and formatted {len(formatted_markets)} markets from {file_path}"
+        )
         return formatted_markets
     except FileNotFoundError:
-        logger.error(f"Market file not found at {file_path}. API will not have market data.")
+        logger.error(
+            f"Market file not found at {file_path}. API will not have market data."
+        )
         return {}
     except json.JSONDecodeError:
         logger.error(f"Error decoding JSON from {file_path}.")
@@ -40,6 +44,7 @@ def load_markets_from_json(file_path: str) -> Dict[str, Dict[str, Any]]:
         logger.error(f"An unexpected error occurred while loading markets: {e}")
         return {}
 
+
 def log_current_identity():
     try:
         sts = boto3.client("sts")
@@ -47,6 +52,7 @@ def log_current_identity():
         logger.info(f"Running as: {identity}")
     except Exception as e:
         logger.warning(f"Could not determine AWS identity: {e}")
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -62,8 +68,11 @@ RETENTION_WINDOWS_DAYS: List[int] = [14, 28]
 CHUNK_DAYS: int = 28
 
 DATABASE = os.environ.get("ATHENA_DATABASE", "mainnet-beta-archive")
-REGION   = os.environ.get("AWS_REGION", "eu-west-1")
-S3_OUTPUT = os.environ.get("ATHENA_S3_OUTPUT", "s3://mainnet-beta-data-ingestion-bucket/athena/")
+REGION = os.environ.get("AWS_REGION", "eu-west-1")
+S3_OUTPUT = os.environ.get(
+    "ATHENA_S3_OUTPUT", "s3://mainnet-beta-data-ingestion-bucket/athena/"
+)
+
 
 class UserVolumeDetails(BaseModel):
     user_address: str
@@ -73,6 +82,7 @@ class UserVolumeDetails(BaseModel):
     other_market_volume_14d: float = 0.0
     selected_market_volume_28d: float = 0.0
     other_market_volume_28d: float = 0.0
+
 
 class RetentionExplorerItem(BaseModel):
     market: str
@@ -89,10 +99,13 @@ class RetentionExplorerItem(BaseModel):
     total_volume_14d: float
     total_volume_28d: float
 
+
 UTC = tz.tzutc()
+
 
 def dt_from_ms(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1_000, tz=UTC)
+
 
 def partition_tuples(start: datetime, days: int) -> Set[Tuple[str, str, str]]:
     return {
@@ -100,11 +113,11 @@ def partition_tuples(start: datetime, days: int) -> Set[Tuple[str, str, str]]:
         for d in (start + timedelta(n) for n in range(days))
     }
 
+
 def partition_pred(parts: Set[Tuple[str, str, str]]) -> str:
-    lines = [
-        f"(year='{y}' AND month='{m}' AND day='{d}')" for y, m, d in sorted(parts)
-    ]
+    lines = [f"(year='{y}' AND month='{m}' AND day='{d}')" for y, m, d in sorted(parts)]
     return " OR ".join(lines)
+
 
 def sql_new_traders(mkt_idx: int, start_dt: datetime) -> str:
     parts = partition_pred(partition_tuples(start_dt, NEW_TRADER_WINDOW_DAYS))
@@ -138,9 +151,11 @@ def sql_new_traders(mkt_idx: int, start_dt: datetime) -> str:
         WHERE nur.subaccountid = 0
 """
 
+
 # --- New Helper Function for SQL ---
 # Define a scaling factor for quote asset amounts, assuming 6 decimal places (e.g., USDC)
 QUOTE_ASSET_SCALE_FACTOR = 1e6
+
 
 def sql_users_volume(
     users: List[str],
@@ -148,7 +163,7 @@ def sql_users_volume(
     end_dt: datetime,
     partition_func: Callable[[Set[Tuple[str, str, str]]], str],
     market_index: Optional[int] = None,
-    exclude_market_index: Optional[int] = None
+    exclude_market_index: Optional[int] = None,
 ) -> str:
     """
     Generates SQL to calculate the trading volume for a list of users in a given time period.
@@ -158,7 +173,7 @@ def sql_users_volume(
         return ""
 
     user_list = "', '".join(users)
-    
+
     market_filter = ""
     if market_index is not None:
         market_filter = f"AND marketindex = {market_index}"
@@ -197,23 +212,34 @@ def sql_users_volume(
         GROUP BY user
     """
 
-async def calculate_retention_for_market(market_name: str, start_date_str: str) -> Dict[str, Any]:
+
+async def calculate_retention_for_market(
+    market_name: str, start_date_str: str
+) -> Dict[str, Any]:
     conn = None
     try:
         start_date = parser.parse(start_date_str).replace(tzinfo=UTC)
         market_config = ALL_MARKETS.get(market_name)
         if not market_config:
-            raise HTTPException(status_code=404, detail=f"Market '{market_name}' not found.")
+            raise HTTPException(
+                status_code=404, detail=f"Market '{market_name}' not found."
+            )
 
         mkt_idx = market_config["index"]
 
-        logger.info(f"Connecting to Athena. S3 staging: {S3_OUTPUT}, Region: {REGION}, DB: {DATABASE}")
-        conn = connect(s3_staging_dir=S3_OUTPUT, region_name=REGION, schema_name=DATABASE)
+        logger.info(
+            f"Connecting to Athena. S3 staging: {S3_OUTPUT}, Region: {REGION}, DB: {DATABASE}"
+        )
+        conn = connect(
+            s3_staging_dir=S3_OUTPUT, region_name=REGION, schema_name=DATABASE
+        )
         logger.info("Successfully connected to Athena.")
         log_current_identity()
 
         # 1. Find new traders
-        logger.info(f"Scanning for new traders for {market_name} from {start_date_str}...")
+        logger.info(
+            f"Scanning for new traders for {market_name} from {start_date_str}..."
+        )
         q_new_traders = sql_new_traders(mkt_idx, start_date)
         new_traders_df = pd.read_sql(q_new_traders, conn)
         mkt_traders = new_traders_df["user"].tolist()
@@ -221,9 +247,15 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
 
         if not mkt_traders:
             return {
-                "market": market_name, "category": market_config.get("category", []), "start_date": start_date_str,
-                "new_traders_count": 0, "retained_14d_count": 0, "retained_28d_count": 0,
-                "retention_ratio_14d": 0.0, "retention_ratio_28d": 0.0, "user_data": [],
+                "market": market_name,
+                "category": market_config.get("category", []),
+                "start_date": start_date_str,
+                "new_traders_count": 0,
+                "retained_14d_count": 0,
+                "retained_28d_count": 0,
+                "retention_ratio_14d": 0.0,
+                "retention_ratio_28d": 0.0,
+                "user_data": [],
                 "total_initial_selected_market_volume_7d": 0.0,
                 "total_initial_other_market_volume_7d": 0.0,
                 "total_volume_14d": 0.0,
@@ -239,42 +271,101 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
         retention_28d_end = initial_window_end + timedelta(days=28)
 
         def get_and_merge_volume(
-            base_df: pd.DataFrame, column_name: str, start_dt: datetime, end_dt: datetime,
-            m_idx: Optional[int] = None, exclude_m_idx: Optional[int] = None
+            base_df: pd.DataFrame,
+            column_name: str,
+            start_dt: datetime,
+            end_dt: datetime,
+            m_idx: Optional[int] = None,
+            exclude_m_idx: Optional[int] = None,
         ) -> pd.DataFrame:
             logger.info(f"Calculating volume for '{column_name}'...")
-            vol_sql = sql_users_volume(mkt_traders, start_dt, end_dt, partition_pred, m_idx, exclude_m_idx)
-            if not vol_sql: return base_df.assign(**{column_name: 0.0})
-            
+            vol_sql = sql_users_volume(
+                mkt_traders, start_dt, end_dt, partition_pred, m_idx, exclude_m_idx
+            )
+            if not vol_sql:
+                return base_df.assign(**{column_name: 0.0})
+
             vol_df = pd.read_sql(vol_sql, conn)
-            merged_df = base_df.merge(vol_df, on='user', how='left')
-            
+            merged_df = base_df.merge(vol_df, on="user", how="left")
+
             # Explicitly convert to numeric to avoid FutureWarning on downcasting
-            merged_df['total_volume'] = pd.to_numeric(merged_df['total_volume'], errors='coerce')
-            merged_df['total_volume'] = merged_df['total_volume'].fillna(0)
-            return merged_df.rename(columns={'total_volume': column_name})
+            merged_df["total_volume"] = pd.to_numeric(
+                merged_df["total_volume"], errors="coerce"
+            )
+            merged_df["total_volume"] = merged_df["total_volume"].fillna(0)
+            return merged_df.rename(columns={"total_volume": column_name})
 
         # Calculate all volume metrics
-        traders_df = get_and_merge_volume(traders_df, 'initial_selected_market_volume', start_date, initial_window_end, m_idx=mkt_idx)
-        traders_df = get_and_merge_volume(traders_df, 'initial_other_market_volume', start_date, initial_window_end, exclude_m_idx=mkt_idx)
-        traders_df = get_and_merge_volume(traders_df, 'selected_market_volume_14d', initial_window_end, retention_14d_end, m_idx=mkt_idx)
-        traders_df = get_and_merge_volume(traders_df, 'other_market_volume_14d', initial_window_end, retention_14d_end, exclude_m_idx=mkt_idx)
-        traders_df = get_and_merge_volume(traders_df, 'selected_market_volume_28d', initial_window_end, retention_28d_end, m_idx=mkt_idx)
-        traders_df = get_and_merge_volume(traders_df, 'other_market_volume_28d', initial_window_end, retention_28d_end, exclude_m_idx=mkt_idx)
-        
-        traders_df = traders_df.rename(columns={'user': 'user_address'})
+        traders_df = get_and_merge_volume(
+            traders_df,
+            "initial_selected_market_volume",
+            start_date,
+            initial_window_end,
+            m_idx=mkt_idx,
+        )
+        traders_df = get_and_merge_volume(
+            traders_df,
+            "initial_other_market_volume",
+            start_date,
+            initial_window_end,
+            exclude_m_idx=mkt_idx,
+        )
+        traders_df = get_and_merge_volume(
+            traders_df,
+            "selected_market_volume_14d",
+            initial_window_end,
+            retention_14d_end,
+            m_idx=mkt_idx,
+        )
+        traders_df = get_and_merge_volume(
+            traders_df,
+            "other_market_volume_14d",
+            initial_window_end,
+            retention_14d_end,
+            exclude_m_idx=mkt_idx,
+        )
+        traders_df = get_and_merge_volume(
+            traders_df,
+            "selected_market_volume_28d",
+            initial_window_end,
+            retention_28d_end,
+            m_idx=mkt_idx,
+        )
+        traders_df = get_and_merge_volume(
+            traders_df,
+            "other_market_volume_28d",
+            initial_window_end,
+            retention_28d_end,
+            exclude_m_idx=mkt_idx,
+        )
+
+        traders_df = traders_df.rename(columns={"user": "user_address"})
 
         # --- Summary Volume Metrics ---
-        total_initial_selected_market_volume_7d = traders_df['initial_selected_market_volume'].sum()
-        total_initial_other_market_volume_7d = traders_df['initial_other_market_volume'].sum()
-        total_volume_14d = (traders_df['selected_market_volume_14d'] + traders_df['other_market_volume_14d']).sum()
-        total_volume_28d = (traders_df['selected_market_volume_28d'] + traders_df['other_market_volume_28d']).sum()
+        total_initial_selected_market_volume_7d = traders_df[
+            "initial_selected_market_volume"
+        ].sum()
+        total_initial_other_market_volume_7d = traders_df[
+            "initial_other_market_volume"
+        ].sum()
+        total_volume_14d = (
+            traders_df["selected_market_volume_14d"]
+            + traders_df["other_market_volume_14d"]
+        ).sum()
+        total_volume_28d = (
+            traders_df["selected_market_volume_28d"]
+            + traders_df["other_market_volume_28d"]
+        ).sum()
 
         # --- Summary Statistics ---
-        retained_14d_count = int((traders_df['other_market_volume_14d'] > 0).sum())
-        retained_28d_count = int((traders_df['other_market_volume_28d'] > 0).sum())
-        retention_ratio_14d = (retained_14d_count / new_traders_count) if new_traders_count > 0 else 0.0
-        retention_ratio_28d = (retained_28d_count / new_traders_count) if new_traders_count > 0 else 0.0
+        retained_14d_count = int((traders_df["other_market_volume_14d"] > 0).sum())
+        retained_28d_count = int((traders_df["other_market_volume_28d"] > 0).sum())
+        retention_ratio_14d = (
+            (retained_14d_count / new_traders_count) if new_traders_count > 0 else 0.0
+        )
+        retention_ratio_28d = (
+            (retained_28d_count / new_traders_count) if new_traders_count > 0 else 0.0
+        )
 
         result = {
             "market": market_name,
@@ -285,23 +376,32 @@ async def calculate_retention_for_market(market_name: str, start_date_str: str) 
             "retained_28d_count": retained_28d_count,
             "retention_ratio_14d": round(retention_ratio_14d, 4),
             "retention_ratio_28d": round(retention_ratio_28d, 4),
-            "user_data": traders_df.to_dict('records'),
-            "total_initial_selected_market_volume_7d": float(total_initial_selected_market_volume_7d),
-            "total_initial_other_market_volume_7d": float(total_initial_other_market_volume_7d),
+            "user_data": traders_df.to_dict("records"),
+            "total_initial_selected_market_volume_7d": float(
+                total_initial_selected_market_volume_7d
+            ),
+            "total_initial_other_market_volume_7d": float(
+                total_initial_other_market_volume_7d
+            ),
             "total_volume_14d": float(total_volume_14d),
             "total_volume_28d": float(total_volume_28d),
         }
-            
-        logger.info(f"Successfully calculated consolidated retention for {market_name}.")
+
+        logger.info(
+            f"Successfully calculated consolidated retention for {market_name}."
+        )
         return result
 
     except Exception as e:
         logger.error(f"Error in calculate_retention_for_market: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to process retention data: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to process retention data: {str(e)}"
+        )
     finally:
         if conn:
             conn.close()
             logger.info("Athena connection closed.")
+
 
 @router.get("/markets", response_model=List[str])
 async def get_available_markets():
@@ -315,7 +415,9 @@ async def get_available_markets():
 @router.get("/calculate", response_model=RetentionExplorerItem)
 async def get_retention_for_market(
     market_name: str = Query(..., description="The name of the market to analyze."),
-    start_date: str = Query(..., description="The start date for the analysis (YYYY-MM-DD).")
+    start_date: str = Query(
+        ..., description="The start date for the analysis (YYYY-MM-DD)."
+    ),
 ):
     """
     Calculates user retention for a specific market from a given start date.
@@ -323,11 +425,16 @@ async def get_retention_for_market(
     - Measures retention in other markets at 14 and 28 days.
     """
     try:
-        logger.info(f"Received request for /calculate: market='{market_name}', date='{start_date}'")
+        logger.info(
+            f"Received request for /calculate: market='{market_name}', date='{start_date}'"
+        )
         result_data = await calculate_retention_for_market(market_name, start_date)
         return RetentionExplorerItem(**result_data)
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
         logger.error(f"Unhandled error in /calculate endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="An internal server error occurred during calculation.") 
+        raise HTTPException(
+            status_code=500,
+            detail="An internal server error occurred during calculation.",
+        )
