@@ -69,6 +69,7 @@ def sql_get_user_first_trade_date(users: List[str]) -> str:
             MIN(CAST(ts AS BIGINT)) as first_trade_ts
         FROM eventtype_orderrecord
         WHERE "user" IN ('{user_list}')
+          AND "order".orderid = 1
         GROUP BY "user"
     """
 
@@ -171,14 +172,23 @@ async def calculate_wallet_activity(since_date_str: str) -> Dict[str, Any]:
             }
 
         logger.info("Getting first trade dates for all traders...")
-        q_first_trades = sql_get_user_first_trade_date(all_traders)
-        first_trades_df = pd.read_sql(q_first_trades, conn)
-        logger.info("Getting last trade dates before analysis date...")
-        q_last_trades = sql_get_user_last_trade_before_date(all_traders, since_date)
-        last_trades_df = pd.read_sql(q_last_trades, conn)
-        logger.info("Calculating volume since analysis date...")
-        q_volume = sql_get_user_volume_since_date(all_traders, since_date)
-        volume_df = pd.read_sql(q_volume, conn)
+        first_trades_df = pd.DataFrame()
+        last_trades_df = pd.DataFrame()
+        volume_df = pd.DataFrame()
+        batch_size = 1000
+        for i in range(0, len(all_traders), batch_size):
+            batch = all_traders[i : i + batch_size]
+            q_first_trades = sql_get_user_first_trade_date(batch)
+            first_trades_df = pd.concat(
+                [first_trades_df, pd.read_sql(q_first_trades, conn)]
+            )
+            logger.info("Getting last trade dates before analysis date...")
+            q_last_trades = sql_get_user_last_trade_before_date(batch, since_date)
+            last_trades_df = pd.concat(
+                [last_trades_df, pd.read_sql(q_last_trades, conn)]
+            )
+            q_volume = sql_get_user_volume_since_date(batch, since_date)
+            volume_df = pd.concat([volume_df, pd.read_sql(q_volume, conn)])
 
         result = {
             "analysis_date": since_date_str,

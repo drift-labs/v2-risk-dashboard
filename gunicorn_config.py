@@ -7,7 +7,7 @@ max_requests = 1000
 max_requests_jitter = 50
 accesslog = "-"
 errorlog = "-"
-loglevel = "info"
+# loglevel = "info"
 
 # Restart workers that die unexpectedly
 worker_exit_on_restart = True

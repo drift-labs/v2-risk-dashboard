@@ -36,6 +36,12 @@ def fetch_api_data(
             response = requests.get(f"{BASE_URL}/api/{section}/{path}", params=params)
         else:
             response = requests.get(f"{BASE_URL}/api/{section}/{path}")
+
+        result = response.json()
+        if response.status_code == 202 or (
+            isinstance(result, dict) and result.get("result") == "processing"
+        ):
+            return result
     else:
         base_delay = 0.5
         total_wait_time = 0
@@ -50,10 +56,9 @@ def fetch_api_data(
                 response = requests.get(f"{BASE_URL}/api/{section}/{path}")
 
             result = response.json()
-            if not ("result" in result and result["result"] == "miss"):
+            if not ("result" in result and result["result"] in ("miss", "processing")):
                 break
 
-            # Calculate exponential backoff with a bit of randomness
             delay = min(base_delay * (2**attempt), max_wait_time - total_wait_time)
             if delay <= 0:
                 break
@@ -71,18 +76,11 @@ def fetch_api_data(
 
 def fetch_cached_data(url: str, _params: Optional[dict] = None, key: str = "") -> dict:
     """
-    Fetches cached data from storage with Streamlit caching. Constructs cache keys
-    from the URL and parameters, supporting both local and remote storage.
-
-    Example cache keys:
-    - Simple: /api/health/distribution -> GET_api_health_distribution.json
-    - With params: /api/shock/map?group=stable&dist=0.05
-                  -> GET_api_shock_map__group-stable_dist-0.05.json
+    Fetches cached data from storage with Streamlit caching.
 
     Args:
         url (str): API endpoint path
         _params (Optional[dict]): Query parameters for the request
-        key (str): Additional cache key modifier (unused)
 
     Returns:
         dict: Cached response content

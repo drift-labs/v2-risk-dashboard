@@ -34,10 +34,13 @@ from backend.state import BackendState
 from backend.tasks.snapshot_watcher import SnapshotWatcher
 
 load_dotenv()
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# logging.basicConfig(
+#     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# )
 logger = logging.getLogger(__name__)
+
+# Suppress httpx logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 state = BackendState()
 snapshot_watcher = SnapshotWatcher(state, check_interval=60)  # Check every minute

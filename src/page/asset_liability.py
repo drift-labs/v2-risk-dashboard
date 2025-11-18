@@ -1,24 +1,23 @@
-import requests
-import pandas as pd
-from enum import Enum
-import streamlit as st
-from driftpy.constants.perp_markets import mainnet_perp_market_configs
-from driftpy.constants.spot_markets import mainnet_spot_market_configs
-
-from lib.api import fetch_cached_data
-from utils import get_current_slot
-
 # --- START NEW IMPORTS FOR DRIFTPY SPOT MARKET DATA --- #
 import asyncio
 import os
+from enum import Enum
+
+import pandas as pd
+import requests
+import streamlit as st
 from anchorpy import Wallet
-from solders.keypair import Keypair
-from solana.rpc.async_api import AsyncClient
+from driftpy.constants.perp_markets import mainnet_perp_market_configs
+from driftpy.constants.spot_markets import mainnet_spot_market_configs
 from driftpy.drift_client import DriftClient
 from driftpy.market_map.market_map import MarketMap
 from driftpy.market_map.market_map_config import MarketMapConfig, WebsocketConfig
 from driftpy.types import MarketType
-# --- END NEW IMPORTS --- #
+from solana.rpc.async_api import AsyncClient
+from solders.keypair import Keypair
+
+from lib.api import fetch_cached_data
+from utils import get_current_slot
 
 options = [0, 1, 2, 3]
 labels = [
@@ -28,14 +27,17 @@ labels = [
     "init. health < 10%",
 ]
 
+
 class PriceImpactStatus(str, Enum):
     PASS = "✅"  # Price impact is below threshold
     NO_BALANCE = "ℹ️"  # No balance to check
     QUOTE_TOKEN = "�"  # USDC or quote token
     FAIL = "❌"  # Price impact above threshold
 
+
 def calculate_effective_leverage(assets: float, liabilities: float) -> float:
     return liabilities / assets if assets != 0 else 0
+
 
 def format_metric(
     value: float, should_highlight: bool, mode: int, financial: bool = False
@@ -43,44 +45,46 @@ def format_metric(
     formatted = f"{value:,.2f}" if financial else f"{value:.2f}"
     return f"{formatted} ✅" if should_highlight and mode > 0 else formatted
 
+
 def get_jupiter_quote(input_mint: str, output_mint: str, amount: int) -> float:
     """Get price impact quote from Jupiter DEX API.
-    
+
     Args:
         input_mint: Token being sold
         output_mint: Token being bought
         amount: Amount in base units (lamports)
-    
+
     Returns:
         Price impact as a decimal (e.g., 0.01 = 1%)
     """
     if input_mint == output_mint:
         return 0
-        
+
     base_url = "https://quote-api.jup.ag/v6/quote"
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
         "amount": str(amount),
-        "slippageBps": 50  # 0.5% slippage tolerance
+        "slippageBps": 50,  # 0.5% slippage tolerance
     }
-    
+
     try:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
         data = response.json()
-        
+
         if "error" in data:
             return 0
-            
+
         price_impact = float(data.get("priceImpactPct", 0))
         return price_impact
     except requests.RequestException:
         return 0
 
+
 def get_largest_spot_borrow_per_market():
     """Fetch the largest spot borrow for each market from the API.
-    
+
     Returns:
         Dictionary containing:
         - market_indices: List of market indices
@@ -92,18 +96,24 @@ def get_largest_spot_borrow_per_market():
         response = fetch_cached_data("health/largest_spot_borrow_per_market")
         result = {
             "market_indices": response["Market Index"],
-            "scaled_balances": [float(bal.replace(",", "")) for bal in response["Scaled Balance"]],
-            "values": [float(val.replace("$", "").replace(",", "")) for val in response["Value"]],
-            "public_keys": response["Public Key"]
+            "scaled_balances": [
+                float(bal.replace(",", "")) for bal in response["Scaled Balance"]
+            ],
+            "values": [
+                float(val.replace("$", "").replace(",", ""))
+                for val in response["Value"]
+            ],
+            "public_keys": response["Public Key"],
         }
         return result
     except Exception:
         return {
-            "market_indices": [], 
+            "market_indices": [],
             "scaled_balances": [],
             "values": [],
-            "public_keys": []
+            "public_keys": [],
         }
+
 
 @st.cache_data
 def load_spot_markets_data() -> dict[int, dict[str, float]]:
@@ -125,6 +135,7 @@ def load_spot_markets_data() -> dict[int, dict[str, float]]:
     loop.close()
     return data
 
+
 async def _async_load_spot_markets_data(rpc_url: str) -> dict[int, dict[str, float]]:
     """
     Asynchronous function to load spot markets from driftpy
@@ -134,14 +145,14 @@ async def _async_load_spot_markets_data(rpc_url: str) -> dict[int, dict[str, flo
     keypair = Keypair()
     wallet = Wallet(keypair)
     connection = AsyncClient(rpc_url)
-    
+
     drift_client = DriftClient(connection, wallet)
     spot_market_map = MarketMap(
         MarketMapConfig(
             drift_client.program,
             MarketType.Spot(),
             WebsocketConfig(resub_timeout_ms=10000),
-            connection
+            connection,
         )
     )
 
@@ -153,12 +164,13 @@ async def _async_load_spot_markets_data(rpc_url: str) -> dict[int, dict[str, flo
         maint_raw = market.data.maintenance_asset_weight  # e.g. 9000 => 0.9
         decimals = market.data.decimals or 6
         ret[market_index] = {
-            "maintenance_asset_weight": float(maint_raw)/1e4,
-            "decimals": float(decimals)
+            "maintenance_asset_weight": float(maint_raw) / 1e4,
+            "decimals": float(decimals),
         }
 
     await connection.close()
     return ret
+
 
 def get_maintenance_asset_weight(market_index: int) -> float:
     """
@@ -168,6 +180,7 @@ def get_maintenance_asset_weight(market_index: int) -> float:
     data = load_spot_markets_data()
     return data.get(market_index, {}).get("maintenance_asset_weight", 0.9)
 
+
 def get_spot_market_decimals(market_index: int) -> int:
     """
     Get the decimals for the specified spot market from the cached dictionary.
@@ -176,9 +189,10 @@ def get_spot_market_decimals(market_index: int) -> int:
     data = load_spot_markets_data()
     return int(data.get(market_index, {}).get("decimals"))
 
+
 def check_price_impact(market_index: int, scaled_balance: float) -> PriceImpactStatus:
     """Check if liquidating a position would have too much price impact using the new driftpy-based data.
-    
+
     1. Gets the market config for the user-specified index.
     2. Checks special cases (USDC, zero balance).
     3. Calculates the maximum allowed price impact using maintenance_asset_weight.
@@ -189,7 +203,7 @@ def check_price_impact(market_index: int, scaled_balance: float) -> PriceImpactS
         # Get market config for the mint address
         market_config = next(
             (m for m in mainnet_spot_market_configs if m.market_index == market_index),
-            None
+            None,
         )
         if not market_config:
             return PriceImpactStatus.PASS  # if unknown, skip
@@ -204,8 +218,7 @@ def check_price_impact(market_index: int, scaled_balance: float) -> PriceImpactS
 
         # Get USDC market config for quote currency
         usdc_config = next(
-            (m for m in mainnet_spot_market_configs if m.symbol == "USDC"),
-            None
+            (m for m in mainnet_spot_market_configs if m.symbol == "USDC"), None
         )
         if not usdc_config:
             return PriceImpactStatus.PASS
@@ -218,14 +231,10 @@ def check_price_impact(market_index: int, scaled_balance: float) -> PriceImpactS
         decimals = get_spot_market_decimals(market_index)
 
         # Convert token amount to base units
-        amount = int(scaled_balance * (10 ** decimals))
+        amount = int(scaled_balance * (10**decimals))
 
         # Get price impact from Jupiter
-        price_impact = get_jupiter_quote(
-            market_config.mint,
-            usdc_config.mint,
-            amount
-        )
+        price_impact = get_jupiter_quote(market_config.mint, usdc_config.mint, amount)
 
         # Compare price impact to threshold
         if price_impact < threshold:
@@ -234,6 +243,7 @@ def check_price_impact(market_index: int, scaled_balance: float) -> PriceImpactS
             return PriceImpactStatus.FAIL
     except Exception:
         return PriceImpactStatus.PASS
+
 
 def generate_summary_data(
     df: pd.DataFrame, mode: int, perp_market_index: int
@@ -264,6 +274,7 @@ def generate_summary_data(
             ].sum(),
         }
     return pd.DataFrame(summary_data).T
+
 
 def asset_liab_matrix_cached_page():
     if "only_high_leverage_mode_users" not in st.session_state:

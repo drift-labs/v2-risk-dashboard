@@ -14,6 +14,7 @@ from page.deposits_page import deposits_page
 from page.health import health_page
 from page.high_leverage_page import high_leverage_page
 from page.liquidation_curves_page import liquidation_curves_page
+from page.liquidation_simulation_page import liquidation_simulation_page
 from page.market_inspector_page import market_inspector_page
 from page.market_recommender_page import market_recommender_page
 from page.open_interest_page import open_interest_page
@@ -118,6 +119,12 @@ if __name__ == "__main__":
             url_path="liquidation-curves",
             title="Liquidation Curves",
             icon="🌊",
+        ),
+        st.Page(
+            liquidation_simulation_page,
+            url_path="liquidation-simulation",
+            title="Liquidation Simulation",
+            icon="🔬",
         ),
     ]
 

@@ -9,7 +9,10 @@ from itertools import islice
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
 
-from backend.api.asset_liability import _get_asset_liability_matrix
+from backend.api.asset_liability import (
+    _get_asset_liability_matrix,
+    _get_liquidation_simulation,
+)
 from backend.api.price_shock import _get_price_shock
 from backend.state import BackendState
 from shared.types import PriceShockAssetGroup
@@ -63,20 +66,37 @@ class PriceShockEndpoint(Endpoint):
         self.oracle_distortion = oracle_distortion
         self.n_scenarios = n_scenarios
         self.pool_id = pool_id
-        
+
         params = {
             "asset_group": asset_group,
             "oracle_distortion": oracle_distortion,
             "n_scenarios": n_scenarios,
         }
-        
+
         # Only add pool_id if it's not None
         if pool_id is not None:
             params["pool_id"] = pool_id
-            
+
         super().__init__(
             "price-shock/usermap",
             params,
+        )
+
+
+@dataclass
+class LiquidationSimulationEndpoint(Endpoint):
+    spot_market_index: int
+    new_maintenance_asset_weight: float
+
+    def __init__(self, spot_market_index: int, new_maintenance_asset_weight: float):
+        self.spot_market_index = spot_market_index
+        self.new_maintenance_asset_weight = new_maintenance_asset_weight
+        super().__init__(
+            "asset-liability/liquidation-simulation",
+            {
+                "spot_market_index": spot_market_index,
+                "new_maintenance_asset_weight": new_maintenance_asset_weight,
+            },
         )
 
 
@@ -112,12 +132,22 @@ async def process_multiple_endpoints(state_pickle_path: str, endpoints: list[End
                     pool_id=query_params.get("pool_id"),
                 )
 
-            if endpoint == "asset-liability/matrix":
+            elif endpoint == "asset-liability/matrix":
                 content = await _get_asset_liability_matrix(
                     state.last_oracle_slot,
                     state.vat,
                     mode=query_params["mode"],
                     perp_market_index=query_params["perp_market_index"],
+                )
+
+            elif endpoint == "asset-liability/liquidation-simulation":
+                content = await _get_liquidation_simulation(
+                    state.last_oracle_slot,
+                    state.vat,
+                    spot_market_index=query_params["spot_market_index"],
+                    new_maintenance_asset_weight=query_params[
+                        "new_maintenance_asset_weight"
+                    ],
                 )
 
             return JSONResponse(content=content)
@@ -180,6 +210,10 @@ async def main():
     ps_parser.add_argument("--n-scenarios", type=int, required=True)
     ps_parser.add_argument("--pool-id", type=int, help="Filter by pool ID (optional)")
 
+    ls_parser = subparsers.add_parser("liquidation-simulation")
+    ls_parser.add_argument("--spot-market-index", type=int, required=True)
+    ls_parser.add_argument("--new-maintenance-asset-weight", type=float, required=True)
+
     args = parser.parse_args()
 
     if not args.use_snapshot:
@@ -203,7 +237,14 @@ async def main():
                 asset_group=args.asset_group,
                 oracle_distortion=args.oracle_distortion,
                 n_scenarios=args.n_scenarios,
-                pool_id=getattr(args, 'pool_id', None),
+                pool_id=getattr(args, "pool_id", None),
+            )
+        )
+    elif args.command == "liquidation-simulation":
+        endpoints.append(
+            LiquidationSimulationEndpoint(
+                spot_market_index=args.spot_market_index,
+                new_maintenance_asset_weight=args.new_maintenance_asset_weight,
             )
         )
 
@@ -217,3 +258,4 @@ if __name__ == "__main__":
 # python -m backend.scripts.generate_ucache --use-snapshot asset-liability --mode 0 --perp-market-index 0
 # python -m backend.scripts.generate_ucache --use-snapshot price-shock --asset-group "ignore+stables" --oracle-distortion 0.05 --n-scenarios 5
 # python -m backend.scripts.generate_ucache --use-snapshot price-shock --asset-group "ignore+stables" --oracle-distortion 0.05 --n-scenarios 5 --pool-id 0
+# python -m backend.scripts.generate_ucache --use-snapshot liquidation-simulation --spot-market-index 0 --new-maintenance-asset-weight 0.85
