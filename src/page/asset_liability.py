@@ -1,5 +1,5 @@
-# --- START NEW IMPORTS FOR DRIFTPY SPOT MARKET DATA --- #
 import asyncio
+import json
 import os
 import re
 from enum import Enum
@@ -345,10 +345,11 @@ def asset_liab_matrix_cached_page():
 
     df = df.fillna(0)
 
-    # Preserve sparse dicts so the column stays Arrow-compatible when rendered
+    # Convert perp_positions dicts to JSON strings for Arrow compatibility
+    # PyArrow cannot serialize mixed struct/non-struct columns
     if "perp_positions" in df.columns:
         df["perp_positions"] = df["perp_positions"].apply(
-            lambda x: x if isinstance(x, dict) else None
+            lambda x: json.dumps(x) if isinstance(x, dict) else ""
         )
 
     df = df[sort_columns_naturally(df.columns.tolist())]
