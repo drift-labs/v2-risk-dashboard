@@ -3,7 +3,11 @@ import functools
 from typing import List, Optional
 
 from driftpy.accounts.cache import DriftClientCache
-from driftpy.constants.numeric_constants import MARGIN_PRECISION, QUOTE_PRECISION
+from driftpy.constants.numeric_constants import (
+    BASE_PRECISION,
+    MARGIN_PRECISION,
+    QUOTE_PRECISION,
+)
 from driftpy.constants.perp_markets import mainnet_perp_market_configs
 from driftpy.constants.spot_markets import mainnet_spot_market_configs
 from driftpy.drift_client import DriftClient
@@ -54,14 +58,38 @@ def get_collateral_composition(user: DriftUser, margin_category, num_markets: in
 
 
 def get_perp_liab_composition(user: DriftUser, margin_category, num_markets: int):
-    perp_net_liabilities = {
-        market_index: user.get_perp_market_liability(
-            market_index, margin_category, signed=True
+    """Get signed perp position values for each market.
+
+    Returns positive values for longs, negative for shorts.
+    Note: driftpy's get_perp_market_liability(signed=True) has a bug where
+    the 'signed' param is passed to 'strict' internally, so it never returns
+    negative values. We compute the signed value manually here.
+    """
+    perp_signed_values = {}
+    for market_index in range(num_markets):
+        perp_position = user.get_perp_position(market_index)
+        if perp_position is None or perp_position.base_asset_amount == 0:
+            perp_signed_values[market_index] = 0
+            continue
+
+        # Get oracle price for this market
+        oracle_data = user.drift_client.get_oracle_price_data_for_perp_market(
+            market_index
         )
-        / QUOTE_PRECISION
-        for market_index in range(num_markets)
-    }
-    return perp_net_liabilities
+        if oracle_data is None:
+            perp_signed_values[market_index] = 0
+            continue
+
+        # Calculate signed value: base_asset_amount * price / BASE_PRECISION
+        # base_asset_amount is positive for longs, negative for shorts
+        # Result is in PRICE_PRECISION which equals QUOTE_PRECISION
+        signed_value = (
+            perp_position.base_asset_amount * oracle_data.price
+        ) // BASE_PRECISION
+
+        perp_signed_values[market_index] = signed_value / QUOTE_PRECISION
+
+    return perp_signed_values
 
 
 @functools.cache

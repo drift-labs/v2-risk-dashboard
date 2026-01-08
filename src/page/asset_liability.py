@@ -1,6 +1,7 @@
 # --- START NEW IMPORTS FOR DRIFTPY SPOT MARKET DATA --- #
 import asyncio
 import os
+import re
 from enum import Enum
 
 import pandas as pd
@@ -31,12 +32,37 @@ labels = [
 class PriceImpactStatus(str, Enum):
     PASS = "✅"  # Price impact is below threshold
     NO_BALANCE = "ℹ️"  # No balance to check
-    QUOTE_TOKEN = "�"  # USDC or quote token
+    QUOTE_TOKEN = ""  # USDC or quote token
     FAIL = "❌"  # Price impact above threshold
 
 
 def calculate_effective_leverage(assets: float, liabilities: float) -> float:
     return liabilities / assets if assets != 0 else 0
+
+
+def sort_columns_naturally(columns: list[str]) -> list[str]:
+    core_columns = [
+        "user_key",
+        "perp_positions",
+        "is_high_leverage",
+        "leverage",
+        "upnl",
+        "net_usd_value",
+        "perp_liability",
+        "spot_asset",
+        "spot_liability",
+        "health",
+    ]
+
+    def sort_key(col: str):
+        if col in core_columns:
+            return (0, core_columns.index(col), 0, "")
+        match = re.match(r"spot_(\d+)_(.+)", col)
+        if match:
+            return (1, int(match.group(1)), 0, match.group(2))
+        return (2, 0, 0, col)
+
+    return sorted(columns, key=sort_key)
 
 
 def format_metric(
@@ -249,10 +275,15 @@ def generate_summary_data(
     df: pd.DataFrame, mode: int, perp_market_index: int
 ) -> pd.DataFrame:
     summary_data = {}
+
+    def safe_sum(col_name: str) -> float:
+        """Safely sum a column, returning 0 if it doesn't exist."""
+        return df[col_name].sum() if col_name in df.columns else 0.0
+
     for i in range(len(mainnet_spot_market_configs)):
         prefix = f"spot_{i}"
-        assets = df[f"{prefix}_all_assets"].sum()
-        liabilities = df[f"{prefix}_all"].sum()
+        assets = safe_sum(f"{prefix}_all_assets")
+        liabilities = safe_sum(f"{prefix}_all")
 
         summary_data[f"spot{i} ({mainnet_spot_market_configs[i].symbol})"] = {
             "all_assets": assets,
@@ -264,14 +295,14 @@ def generate_summary_data(
                 0 < calculate_effective_leverage(assets, liabilities) < 2,
                 mode,
             ),
-            "all_spot": df[f"{prefix}_all_spot"].sum(),
-            "all_perp": df[f"{prefix}_all_perp"].sum(),
-            f"perp_{perp_market_index}_long": df[
+            "all_spot": safe_sum(f"{prefix}_all_spot"),
+            "all_perp": safe_sum(f"{prefix}_all_perp"),
+            f"perp_{perp_market_index}_long": safe_sum(
                 f"{prefix}_perp_{perp_market_index}_long"
-            ].sum(),
-            f"perp_{perp_market_index}_short": df[
+            ),
+            f"perp_{perp_market_index}_short": safe_sum(
                 f"{prefix}_perp_{perp_market_index}_short"
-            ].sum(),
+            ),
         }
     return pd.DataFrame(summary_data).T
 
@@ -306,7 +337,14 @@ def asset_liab_matrix_cached_page():
         _params={"mode": mode, "perp_market_index": perp_market_index},
         key=f"asset-liability/matrix_{mode}_{perp_market_index}",
     )
-    df = pd.DataFrame(result["df"])
+    df_data = result["df"]
+    if isinstance(df_data, list):
+        df = pd.DataFrame.from_records(df_data)
+        df = df.fillna(0)
+    else:
+        df = pd.DataFrame(df_data)
+
+    df = df[sort_columns_naturally(df.columns.tolist())]
 
     if st.session_state.only_high_leverage_mode_users:
         df = df[df["is_high_leverage"]]
@@ -351,16 +389,23 @@ def asset_liab_matrix_cached_page():
         st.dataframe(filtered_df, hide_index=True)
 
     for idx, tab in enumerate(tabs[1:]):
-        important_cols = [x for x in filtered_df.columns if "spot_" + str(idx) in x]
+        prefix = f"spot_{idx}_"
+        important_cols = [x for x in filtered_df.columns if x.startswith(prefix)]
         filtered_df["Link"] = filtered_df["user_key"].apply(
             lambda x: f"https://app.drift.trade/overview?userAccount={x}"
         )
-        toshow = filtered_df[
-            ["user_key", "Link", "spot_asset", "net_usd_value"] + important_cols
+        base_cols = ["user_key", "Link", "spot_asset", "net_usd_value"]
+        existing_cols = [
+            c for c in base_cols + important_cols if c in filtered_df.columns
         ]
-        toshow = toshow[toshow[important_cols].abs().sum(axis=1) != 0].sort_values(
-            by="spot_" + str(idx) + "_all", ascending=False
-        )
+        toshow = filtered_df[existing_cols]
+
+        sort_col = f"spot_{idx}_all"
+        if important_cols:
+            toshow = toshow[toshow[important_cols].abs().sum(axis=1) != 0]
+            if sort_col in toshow.columns:
+                toshow = toshow.sort_values(by=sort_col, ascending=False)
+
         tab.write(
             f"{len(toshow)} users with this asset to cover liabilities (with {st.session_state.min_leverage}x leverage or more)"
         )
