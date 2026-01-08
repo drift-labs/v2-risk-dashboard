@@ -340,9 +340,16 @@ def asset_liab_matrix_cached_page():
     df_data = result["df"]
     if isinstance(df_data, list):
         df = pd.DataFrame.from_records(df_data)
-        df = df.fillna(0)
     else:
         df = pd.DataFrame(df_data)
+
+    df = df.fillna(0)
+
+    # Preserve sparse dicts so the column stays Arrow-compatible when rendered
+    if "perp_positions" in df.columns:
+        df["perp_positions"] = df["perp_positions"].apply(
+            lambda x: x if isinstance(x, dict) else None
+        )
 
     df = df[sort_columns_naturally(df.columns.tolist())]
 
