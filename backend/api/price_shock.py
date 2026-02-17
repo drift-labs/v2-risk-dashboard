@@ -2,6 +2,7 @@ from driftpy.drift_client import DriftClient
 from driftpy.pickle.vat import Vat
 from fastapi import APIRouter
 
+from backend.results import read_result
 from backend.state import BackendRequest
 from backend.utils.price_shock import PriceShockAssetGroup, get_price_shock_df
 
@@ -39,6 +40,19 @@ async def get_price_shock(
     n_scenarios: int = 5,
     pool_id: int = None,
 ):
+    # Try pre-generated result first
+    params = {
+        "asset_group": asset_group,
+        "oracle_distortion": oracle_distortion,
+        "n_scenarios": n_scenarios,
+    }
+    if pool_id is not None:
+        params["pool_id"] = pool_id
+    result = read_result("price-shock/usermap", params)
+    if result is not None:
+        return result
+
+    # Fall back to live computation
     return await _get_price_shock(
         request.state.backend_state.last_oracle_slot,
         request.state.backend_state.vat,
