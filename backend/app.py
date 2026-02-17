@@ -22,13 +22,11 @@ from backend.api import (
     positions,
     price_shock,
     snapshot,
-    ucache,
     user_retention_explorer_api,
     user_retention_summary_api,
     vaults_api,
     wallet_activity_api,
 )
-from backend.middleware.cache_middleware import CacheMiddleware
 from backend.middleware.readiness import ReadinessMiddleware
 from backend.state import BackendState
 from backend.tasks.snapshot_watcher import SnapshotWatcher
@@ -79,7 +77,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(ReadinessMiddleware, state=state)
-app.add_middleware(CacheMiddleware, state=state, cache_dir="cache")
 
 app.include_router(health.router, prefix="/api/health", tags=["health"])
 app.include_router(
@@ -96,7 +93,6 @@ app.include_router(
     asset_liability.router, prefix="/api/asset-liability", tags=["asset-liability"]
 )
 app.include_router(snapshot.router, prefix="/api/snapshot", tags=["snapshot"])
-app.include_router(ucache.router, prefix="/api/ucache", tags=["ucache"])
 app.include_router(deposits_api.router, prefix="/api/deposits", tags=["deposits"])
 app.include_router(pnl_api.router, prefix="/api/pnl", tags=["pnl"])
 app.include_router(vaults_api.router, prefix="/api/vaults", tags=["vaults"])
