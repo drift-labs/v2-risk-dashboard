@@ -7,6 +7,8 @@ from pydantic import BaseModel
 import logging
 import json
 
+from backend.cache import cached_response
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class RetentionSummaryItem(BaseModel):
 # ──────────────────────── 2. API Endpoint ───────────────────────── #
 
 @router.get("/summary", response_model=List[RetentionSummaryItem])
+@cached_response(ttl_seconds=300)
 async def get_user_retention_summary():
     """
     Provides a pre-computed summary of user retention for "hype" markets

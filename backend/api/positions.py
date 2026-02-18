@@ -5,6 +5,7 @@ from fastapi import APIRouter
 import logging
 from collections import defaultdict
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
@@ -207,6 +208,7 @@ async def _get_aggregated_positions(vat: Vat) -> dict:
 
 
 @router.get("/aggregated")
+@cached_response(ttl_seconds=300)
 async def get_aggregated_positions(request: BackendRequest):
     """
     Get aggregated positions across all users in the Drift Protocol.

@@ -24,6 +24,7 @@ from driftpy.types import (
 from driftpy.user_map.user_map import UserMap
 from fastapi import APIRouter
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +37,7 @@ SLOT_INACTIVITY_THRESHOLD = 9000
 
 
 @router.get("/config")
+@cached_response(ttl_seconds=300)
 async def get_high_leverage_config(request: BackendRequest):
     current_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)
     drift_client: DriftClient = getattr(request.state.backend_state, "dc")
@@ -56,6 +58,7 @@ async def get_high_leverage_config(request: BackendRequest):
 
 
 @router.get("/positions/detailed")
+@cached_response(ttl_seconds=300)
 async def get_high_leverage_positions_detailed(request: BackendRequest):
     user_map: Optional[UserMap] = getattr(request.state.backend_state, "user_map", None)
     vat: Optional[Vat] = getattr(request.state.backend_state, "vat", None)
@@ -176,6 +179,7 @@ async def get_high_leverage_positions_detailed(request: BackendRequest):
 
 
 @router.get("/bootable-users")
+@cached_response(ttl_seconds=300)
 async def get_bootable_user_details(request: BackendRequest):
     current_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)
     user_map: Optional[UserMap] = getattr(request.state.backend_state, "user_map", None)

@@ -1,6 +1,7 @@
 from driftpy.pickle.vat import Vat
 from fastapi import APIRouter
 
+from backend.results import read_result
 from backend.state import BackendRequest
 from backend.utils.matrix import get_matrix
 from backend.utils.user_metrics import get_user_metrics_maintenance
@@ -74,6 +75,15 @@ async def _get_asset_liability_matrix(
 async def get_asset_liability_matrix(
     request: BackendRequest, mode: int, perp_market_index: int
 ):
+    # Try pre-generated result first
+    result = read_result(
+        "asset-liability/matrix",
+        {"mode": mode, "perp_market_index": perp_market_index},
+    )
+    if result is not None:
+        return result
+
+    # Fall back to live computation
     return await _get_asset_liability_matrix(
         request.state.backend_state.last_oracle_slot,
         request.state.backend_state.vat,

@@ -4,6 +4,7 @@ from driftpy.vaults import VaultClient
 from fastapi import APIRouter
 from solana.rpc.async_api import AsyncClient
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
@@ -15,6 +16,7 @@ async def create_vault_client():
 
 
 @router.get("/data")
+@cached_response(ttl_seconds=300)
 async def get_vault_data(request: BackendRequest):
     """Fetch all vault data including analytics and depositors in one call"""
 
@@ -23,8 +25,6 @@ async def get_vault_data(request: BackendRequest):
     last_oracle_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)
 
     vaults = []
-    print(analytics["vaults"][0])
-
     for vault in analytics["vaults"]:
         vaults.append(
             {

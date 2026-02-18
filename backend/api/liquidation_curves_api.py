@@ -2,12 +2,14 @@ from driftpy.constants import BASE_PRECISION, PRICE_PRECISION
 from driftpy.pickle.vat import Vat
 from fastapi import APIRouter
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
 
 
 @router.get("/liquidation-curves")
+@cached_response(ttl_seconds=300)
 def get_liquidation_curve(request: BackendRequest, market_index: int):
     vat: Vat = request.state.backend_state.vat
     last_oracle_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)

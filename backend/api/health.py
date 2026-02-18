@@ -7,6 +7,7 @@ from driftpy.pickle.vat import Vat
 from driftpy.types import is_variant
 from fastapi import APIRouter
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
@@ -29,6 +30,7 @@ def to_financial(num: float):
 
 
 @router.get("/health_distribution")
+@cached_response(ttl_seconds=300)
 def get_account_health_distribution(request: BackendRequest):
     """
     Get the distribution of account health across different ranges.
@@ -120,6 +122,7 @@ def get_account_health_distribution(request: BackendRequest):
 
 
 @router.get("/largest_perp_positions")
+@cached_response(ttl_seconds=300)
 def get_largest_perp_positions(request: BackendRequest, market_index: int = None):
     """
     Get the largest perp positions by notional value across all users or for a specific market if market_index is provided.
@@ -190,6 +193,7 @@ def get_largest_perp_positions(request: BackendRequest, market_index: int = None
 
 
 @router.get("/most_levered_perp_positions_above_1m")
+@cached_response(ttl_seconds=300)
 def get_most_levered_perp_positions_above_1m(request: BackendRequest, market_index: int = None):
     """
     Get the most leveraged perpetual positions with value above $1 million.
@@ -264,6 +268,7 @@ def get_most_levered_perp_positions_above_1m(request: BackendRequest, market_ind
 
 
 @router.get("/largest_spot_borrows")
+@cached_response(ttl_seconds=300)
 def get_largest_spot_borrows(request: BackendRequest, market_index: int = None):
     """
     Get the largest spot borrowing positions by value.
@@ -322,6 +327,7 @@ def get_largest_spot_borrows(request: BackendRequest, market_index: int = None):
 
 
 @router.get("/most_levered_spot_borrows_above_1m")
+@cached_response(ttl_seconds=300)
 def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index: int = None):
     """
     Get the most leveraged spot borrowing positions with value above $750,000.
@@ -457,6 +463,7 @@ def get_most_levered_spot_borrows_above_1m(request: BackendRequest, market_index
 
 
 @router.get("/largest_spot_borrow_per_market")
+@cached_response(ttl_seconds=300)
 def get_largest_spot_borrow_per_market(request: BackendRequest):
     """
     Get the largest spot borrowing position for each market index.

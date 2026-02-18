@@ -6,12 +6,14 @@ from driftpy.types import is_variant
 from driftpy.vaults import get_vaults_program
 from fastapi import APIRouter
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
 
 
 @router.get("/deposits")
+@cached_response(ttl_seconds=300)
 async def get_deposits(request: BackendRequest, market_index: Optional[int] = None):
     """
     Get all deposits grouped by authority, optionally filtered by market index.

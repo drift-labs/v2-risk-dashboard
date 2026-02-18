@@ -9,6 +9,8 @@ from dateutil import parser, tz
 from fastapi import APIRouter, HTTPException, Query
 from pyathena import connect
 
+from backend.cache import cached_response
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 logging.basicConfig(level=logging.INFO)
@@ -212,6 +214,7 @@ async def calculate_wallet_activity(since_date_str: str) -> Dict[str, Any]:
 
 
 @router.get("/calculate", response_model=Dict[str, Any])
+@cached_response(ttl_seconds=300)
 async def get_wallet_activity(
     since_date: str = Query(
         ..., description="The date to analyze wallet activity from (YYYY-MM-DD)."

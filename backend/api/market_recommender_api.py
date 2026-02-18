@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from fastapi import APIRouter
 from driftpy.pickle.vat import Vat
+from backend.cache import cached_response
 from backend.state import BackendRequest
 from backend.utils.cache_utils import ttl_cache
 from backend.utils.coingecko_api import (
@@ -68,6 +69,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/market-data")
+@cached_response(ttl_seconds=300)
 async def get_market_data(request: BackendRequest, number_of_tokens: int = 2):
     """
     Get comprehensive market data including CoinGecko data, Drift metrics, and listing recommendations.

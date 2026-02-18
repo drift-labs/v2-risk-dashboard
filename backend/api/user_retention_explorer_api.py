@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pyathena import connect
 from pydantic import BaseModel
 
+from backend.cache import cached_response
+
 
 def load_markets_from_json(file_path: str) -> Dict[str, Dict[str, Any]]:
     """Loads market data from a JSON file and formats it for the API."""
@@ -404,6 +406,7 @@ async def calculate_retention_for_market(
 
 
 @router.get("/markets", response_model=List[str])
+@cached_response(ttl_seconds=300)
 async def get_available_markets():
     """Returns a list of available market names for the explorer."""
     if not ALL_MARKETS:
@@ -413,6 +416,7 @@ async def get_available_markets():
 
 
 @router.get("/calculate", response_model=RetentionExplorerItem)
+@cached_response(ttl_seconds=300)
 async def get_retention_for_market(
     market_name: str = Query(..., description="The name of the market to analyze."),
     start_date: str = Query(

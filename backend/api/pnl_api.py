@@ -1,12 +1,14 @@
 from driftpy.pickle.vat import Vat
 from fastapi import APIRouter
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
 
 
 @router.get("/top_pnl")
+@cached_response(ttl_seconds=300)
 def get_top_pnl(request: BackendRequest, limit: int = 1000):
     vat: Vat = request.state.backend_state.vat
     last_oracle_slot = getattr(request.state.backend_state, "last_oracle_slot", 0)

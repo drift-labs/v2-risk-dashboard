@@ -5,6 +5,7 @@ from typing import Optional, List
 import json
 import logging
 
+from backend.cache import cached_response
 from backend.state import BackendRequest
 
 router = APIRouter()
@@ -242,6 +243,7 @@ async def _get_open_positions_detailed(request: BackendRequest, market_name: Opt
     }
 
 @router.get("/markets", response_model=List[str])
+@cached_response(ttl_seconds=300)
 async def get_available_markets():
     """Returns a list of available market names for the dropdown."""
     if not ALL_MARKETS:
@@ -249,13 +251,16 @@ async def get_available_markets():
     return ["All"] + sorted(list(ALL_MARKETS.keys()))
 
 @router.get("/per-authority")
+@cached_response(ttl_seconds=300)
 async def get_open_interest_per_authority(request: BackendRequest, market_name: Optional[str] = Query(None, alias="market_name")):
     return await _get_open_interest_per_authority(request, market_name)
 
 @router.get("/per-account")
+@cached_response(ttl_seconds=300)
 async def get_open_interest_per_account(request: BackendRequest, market_name: Optional[str] = Query(None, alias="market_name")):
     return await _get_open_interest_per_account(request, market_name)
 
 @router.get("/detailed-positions")
+@cached_response(ttl_seconds=300)
 async def get_open_positions_detailed(request: BackendRequest, market_name: Optional[str] = Query(None, alias="market_name")):
     return await _get_open_positions_detailed(request, market_name)
