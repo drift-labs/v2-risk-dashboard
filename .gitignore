@@ -4,9 +4,8 @@ venv
 .env
 .venv
 pickles/*
-cache
 ignore
-ucache
+results
 
 .DS_Store
 
@@ -46,3 +45,9 @@ exchange_data/*
 list_recommender.log
 
 .testvenv
+
+# ai stuff
+Claude.md
+CLAUDE.md
+.claude
+AGENTS.md

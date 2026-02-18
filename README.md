@@ -21,13 +21,13 @@ In a different terminal, run the frontend with:
 streamlit run src/main.py
 ```
 
-Two endpoints, `asset liabilities` and `price shock` are CPU heavy and so are generated in a separate process
-(instead of on request) and cached, the backend will serve these cached files.
+Two endpoints, `asset liabilities` and `price shock` are CPU heavy and so are pre-generated in a separate process
+and stored in `results/`. The backend serves these pre-generated results instead of computing on-request.
 
-In a different terminal, you can generate the cache files with:
+In a different terminal, you can generate the results with:
 
 ```bash
-./gen.sh
+python -m backend.scripts.generate
 ```
 
 Instead of all the above you can also run it in docker with:
@@ -41,5 +41,3 @@ which will start a process to generate the cache files and then start the backen
 ## Deployment
 
 Pushing should automatically build the docker images and deploy to our k8s cluster.
-
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/drift-labs/driftpy)

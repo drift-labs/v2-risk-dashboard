@@ -15,8 +15,6 @@ RUN mkdir -p /var/log/supervisor
 
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-RUN chmod +x /app/run_gen_loop.sh
-
 EXPOSE 8000
 
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
