@@ -53,9 +53,8 @@ def fetch_list_recommendations():
     try:
         print("Fetching list recommendations from API") # Debug print
         response = fetch_api_data(
-            "list-recommender", 
-            "recommendations", 
-            retry=True
+            "list-recommender",
+            "recommendations",
         )
         print("Successfully fetched data from API.") # Debug print
         return response

@@ -53,9 +53,8 @@ def fetch_delist_recommendations():
     try:
         print("Fetching delist recommendations from API") # Debug print
         response = fetch_api_data(
-            "delist-recommender", 
-            "recommendations", 
-            retry=True
+            "delist-recommender",
+            "recommendations",
         )
         print("Successfully fetched data from API.") # Debug print
         return response

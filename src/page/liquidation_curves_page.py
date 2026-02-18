@@ -152,7 +152,6 @@ def liquidation_curves_page():
             "liquidation-curves",
             "liquidation-curves",
             params=dict(st.query_params),
-            retry=False,
         )
     except Exception as e:
         st.write(e)

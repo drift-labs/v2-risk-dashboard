@@ -15,9 +15,9 @@ from driftpy.market_map.market_map import MarketMap
 from driftpy.market_map.market_map_config import MarketMapConfig, WebsocketConfig
 from driftpy.types import MarketType
 from solana.rpc.async_api import AsyncClient
-from solders.keypair import Keypair
+from solders.keypair import Keypair  # type: ignore
 
-from lib.api import fetch_cached_data
+from lib.api import fetch_api_data
 from utils import get_current_slot
 
 options = [0, 1, 2, 3]
@@ -119,7 +119,7 @@ def get_largest_spot_borrow_per_market():
         - public_keys: List of borrower public keys
     """
     try:
-        response = fetch_cached_data("health/largest_spot_borrow_per_market")
+        response = fetch_api_data("health", "largest_spot_borrow_per_market")
         result = {
             "market_indices": response["Market Index"],
             "scaled_balances": [
@@ -332,10 +332,10 @@ def asset_liab_matrix_cached_page():
     )
     st.query_params.update({"perp_market_index": str(perp_market_index)})
 
-    result = fetch_cached_data(
-        "asset-liability/matrix",
-        _params={"mode": mode, "perp_market_index": perp_market_index},
-        key=f"asset-liability/matrix_{mode}_{perp_market_index}",
+    result = fetch_api_data(
+        "asset-liability",
+        "matrix",
+        params={"mode": mode, "perp_market_index": perp_market_index},
     )
     df_data = result["df"]
     if isinstance(df_data, list):
@@ -394,7 +394,7 @@ def asset_liab_matrix_cached_page():
         st.write(f"Total USD value: **{filtered_df['net_usd_value'].sum():,.2f}**")
         st.write(f"Total collateral: **{filtered_df['spot_asset'].sum():,.2f}**")
         st.write(f"Total liabilities: **{filtered_df['spot_liability'].sum():,.2f}**")
-        st.dataframe(filtered_df, hide_index=True)
+        st.dataframe(filtered_df, hide_index=True, use_container_width=True)
 
     for idx, tab in enumerate(tabs[1:]):
         prefix = f"spot_{idx}_"
@@ -420,6 +420,7 @@ def asset_liab_matrix_cached_page():
         tab.dataframe(
             toshow,
             hide_index=True,
+            use_container_width=True,
             column_config={
                 "Link": st.column_config.LinkColumn("Link", display_text="View"),
             },

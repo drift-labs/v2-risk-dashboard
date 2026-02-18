@@ -22,7 +22,7 @@ def has_error(result):
 
 def pnl_page():
     st.title("Top PnL by User (All Time)")
-    response = fetch_api_data("pnl", "top_pnl", retry=False)
+    response = fetch_api_data("pnl", "top_pnl")
 
     if is_processing(response):
         st.info(

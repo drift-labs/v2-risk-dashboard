@@ -29,7 +29,6 @@ def load_retention_data():
         section="user-retention-summary",
         path="summary",
         params={"bypass_cache": "true"},
-        retry=False,
     )
     return data
 

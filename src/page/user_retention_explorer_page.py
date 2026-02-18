@@ -27,7 +27,7 @@ def calculate_retention(market, start_date):
         "bypass_cache": "false",
     }
     data = fetch_api_data(
-        section="user-retention-explorer", path="calculate", params=params, retry=False
+        section="user-retention-explorer", path="calculate", params=params
     )
     return data
 

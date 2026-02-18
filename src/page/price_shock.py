@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from lib.api import fetch_cached_data
+from lib.api import fetch_api_data
 from shared.types import PriceShockAssetGroup
 from utils import get_current_slot
 
@@ -43,7 +43,7 @@ def initialize_widget_state(param_name, session_state_key, options, default_valu
             converted_val = type_converter(query_val_str) if type_converter else query_val_str
             if converted_val in options:
                 st.session_state[session_state_key] = converted_val
-                return 
+                return
             else: # Invalid value in query param
                 st.session_state[session_state_key] = default_value
         except (ValueError, TypeError): # Conversion failed
@@ -85,8 +85,8 @@ def price_shock_cached_page():
 
     # Asset Group Selection
     asset_group = st.selectbox(
-        "Asset Group", 
-        options=asset_group_options, 
+        "Asset Group",
+        options=asset_group_options,
         index=asset_group_options.index(st.session_state.selected_asset_group),
         key="selected_asset_group",
         on_change=on_asset_group_change
@@ -100,13 +100,13 @@ def price_shock_cached_page():
         key="n_scenarios",
         on_change=on_n_scenarios_change
     )
-    
+
     # Pool ID selection
     def format_pool_id(pool_id_value):
         return pool_display_names_map.get(pool_id_value, str(pool_id_value))
 
     selected_pool_id = st.selectbox(
-        "Pool Filter", 
+        "Pool Filter",
         options=pool_value_options,
         index=pool_value_options.index(st.session_state.selected_pool_id),
         format_func=format_pool_id,
@@ -114,50 +114,33 @@ def price_shock_cached_page():
         on_change=on_pool_id_change,
         help="Filter positions by pool ID. Main Pool (0) has more lenient parameters, Isolated Pools (>0) have stricter risk parameters."
     )
-    
+
     # Determine oracle_distort based on n_scenarios from session_state
     if st.session_state.n_scenarios == 5:
         oracle_distort = 0.05
     else:
         oracle_distort = 0.1
-        
+
     # Prepare API parameters using values from st.session_state
     api_params = {
         "asset_group": st.session_state.selected_asset_group,
         "oracle_distortion": oracle_distort,
         "n_scenarios": st.session_state.n_scenarios,
     }
-    
+
     if st.session_state.selected_pool_id != "all":
         api_params["pool_id"] = int(st.session_state.selected_pool_id)
-    
-    cache_key_parts = [
-        "price-shock/usermap",
-        st.session_state.selected_asset_group,
-        str(oracle_distort),
-        str(st.session_state.n_scenarios),
-        st.session_state.selected_pool_id
-    ]
-    cache_key = "_".join(cache_key_parts)
-    
+
     try:
-        result = fetch_cached_data(
-            "price-shock/usermap",
-            _params=api_params,
-            key=cache_key,
+        result = fetch_api_data(
+            "price-shock",
+            "usermap",
+            params=api_params,
         )
     except Exception as e:
         print("HIT AN EXCEPTION...", e)
         st.error("Failed to fetch data")
         return
-
-    if "result" in result and result["result"] == "miss":
-        st.write("Fetching data for the first time...")
-        st.image(
-            "https://i.gifer.com/origin/8a/8a47f769c400b0b7d81a8f6f8e09a44a_w200.gif"
-        )
-        st.write("Check again in one minute!")
-        st.stop()
 
     current_slot = get_current_slot()
     # Use selected_pool_id from session_state for display
@@ -172,6 +155,7 @@ def price_shock_cached_page():
 
     col1, col2 = st.columns(2)
     with col1:
+        st.subheader("Perpetual Bankruptcy")
         df_liquidations = df_plot.drop(
             columns=["Spot Bankruptcy ($)", "Total Bankruptcy ($)"]
         )
@@ -182,12 +166,13 @@ def price_shock_cached_page():
             },
             inplace=True,
         )
-        st.dataframe(df_liquidations)
+        st.dataframe(df_liquidations, use_container_width=True)
 
     oracle_down_max = pd.DataFrame(json.loads(result["oracle_down_max"]))
     oracle_up_max = pd.DataFrame(json.loads(result["oracle_up_max"]))
 
     with col2:
+        st.subheader("Spot Bankruptcy")
         df_bad_debts = df_plot.drop(
             columns=["Perpetual Bankruptcy ($)", "Total Bankruptcy ($)"]
         )
@@ -198,19 +183,19 @@ def price_shock_cached_page():
             },
             inplace=True,
         )
-        st.dataframe(df_bad_debts)
+        st.dataframe(df_bad_debts, use_container_width=True)
 
     with st.expander(
         str("oracle down max bankrupt count=")
         + str(len(oracle_down_max[oracle_down_max.net_usd_value < 0]))
     ):
-        st.dataframe(oracle_down_max)
+        st.dataframe(oracle_down_max, use_container_width=True)
 
     with st.expander(
         str("oracle up max bankrupt count=")
         + str(len(oracle_up_max[oracle_up_max.net_usd_value < 0]))
     ):
-        st.dataframe(oracle_up_max)
+        st.dataframe(oracle_up_max, use_container_width=True)
 
     with st.expander("distorted oracle keys"):
         st.write(result["distorted_oracles"])

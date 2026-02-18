@@ -27,7 +27,7 @@ def vaults_page():
         "This page may be out of date up to 30 minutes."
     )
 
-    response = fetch_api_data("vaults", "data", retry=False)
+    response = fetch_api_data("vaults", "data")
 
     if is_processing(response):
         st.info(

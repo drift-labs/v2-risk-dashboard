@@ -43,22 +43,19 @@ def open_interest_page():
             api_params['market_name'] = selected_market
 
         result_authority = fetch_api_data(
-            section="open-interest", 
+            section="open-interest",
             path="per-authority",
             params=api_params,
-            retry=False # Let the page handle retries via rerun
         )
         result_account = fetch_api_data(
             section="open-interest",
             path="per-account",
             params=api_params,
-            retry=False
         )
         result_detailed = fetch_api_data(
             section="open-interest",
             path="detailed-positions",
             params=api_params,
-            retry=False
         )
 
         # --- 2. Check for processing state --- 

@@ -54,10 +54,8 @@ def liquidation_simulation_page():
                     params={
                         "spot_market_index": spot_market_index,
                         "new_maintenance_asset_weight": new_maint_weight,
-                        "bypass_cache": "true",  # Always run fresh simulation
+                        "bypass_cache": "true",
                     },
-                    retry=True,  # Retry if processing
-                    max_wait_time=120,
                 )
 
                 if sim_result is None:

@@ -17,7 +17,7 @@ def calculate_wallet_activity(since_date):
         "bypass_cache": "false",
     }
     data = fetch_api_data(
-        section="wallet-activity", path="calculate", params=params, retry=False
+        section="wallet-activity", path="calculate", params=params
     )
     return data
 

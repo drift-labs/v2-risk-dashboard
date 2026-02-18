@@ -5,7 +5,7 @@ from lib.api import fetch_api_data
 
 def backend_page():
     if st.button("Load Pickle"):
-        result = fetch_api_data("snapshot", "pickle", retry=True)
+        result = fetch_api_data("snapshot", "pickle")
         st.write(result)
 
     st.write(

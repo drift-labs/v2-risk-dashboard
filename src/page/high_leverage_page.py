@@ -26,10 +26,9 @@ def high_leverage_page():
         config_data = fetch_api_data(
             section="high-leverage",
             path="config",
-            retry=False,
         )
         result_positions = fetch_api_data(
-            section="high-leverage", path="positions/detailed", retry=False
+            section="high-leverage", path="positions/detailed"
         )
 
         if is_processing(config_data) or is_processing(result_positions):
@@ -197,7 +196,7 @@ def high_leverage_page():
 
         st.subheader("Bootable User Details (Inactive High Leverage Users)")
         result_bootable_users = fetch_api_data(
-            section="high-leverage", path="bootable-users", retry=False
+            section="high-leverage", path="bootable-users"
         )
 
         if is_processing(result_bootable_users):

@@ -67,17 +67,17 @@ def health_page():
 
         # Show Current Metadata
         if col1.button("Show Current Metadata"):
-            metadata_info = fetch_api_data("metadata", "", retry=True)
+            metadata_info = fetch_api_data("metadata", "")
             st.json(metadata_info)
 
         # List Available Pickles
         if col2.button("List Available Pickles"):
-            pickles = fetch_api_data("metadata", "list_pickles", retry=True)
+            pickles = fetch_api_data("metadata", "list_pickles")
             st.write(pickles)
 
         # Force Refresh Pickle
         if col3.button("Force Refresh Pickle"):
-            refresh_resp = fetch_api_data("metadata", "force_refresh", retry=True)
+            refresh_resp = fetch_api_data("metadata", "force_refresh")
             st.json(refresh_resp)
             
         # Bypass Cache for Perp Positions
@@ -89,7 +89,6 @@ def health_page():
                 "health",
                 "largest_perp_positions",
                 params={"number_of_positions": num_positions, "bypass_cache": "true"},
-                retry=True,
             )
 
             if is_processing(fresh_perp_positions):
@@ -117,7 +116,6 @@ def health_page():
     health_distribution = fetch_api_data(
         "health",
         "health_distribution",
-        retry=True,
     )
 
     if is_processing(health_distribution):
@@ -188,7 +186,6 @@ def health_page():
                 "market_index": selected_perp_market,
                 "bypass_cache": "true" if bypass_cache else "false"
             },
-            retry=True,
         )
         
         if is_processing(largest_perp_positions):
@@ -236,7 +233,6 @@ def health_page():
             params={
                 "market_index": selected_perp_market
             },
-            retry=True,
         )
 
         if is_processing(most_levered_positions):
@@ -312,7 +308,6 @@ def health_page():
                 "market_index": selected_spot_market,
                 "bypass_cache": "true" if spot_bypass_cache else "false"
             },
-            retry=True,
         )
         
         if is_processing(largest_spot_borrows):
@@ -361,7 +356,6 @@ def health_page():
             params={
                 "market_index": selected_spot_market
             },
-            retry=True,
         )
         if is_processing(most_levered_borrows):
             is_still_processing = True
