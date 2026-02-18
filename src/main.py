@@ -21,7 +21,6 @@ from page.open_interest_page import open_interest_page
 from page.orderbook import orderbook_page
 from page.pnl_page import pnl_page
 from page.price_shock import price_shock_cached_page
-from page.swap import show as swap_page
 from page.user_retention_explorer_page import user_retention_explorer_page
 from page.user_retention_summary_page import user_retention_summary_page
 from page.vaults_page import vaults_page
@@ -69,12 +68,6 @@ if __name__ == "__main__":
     ]
 
     market_pages = [
-        st.Page(
-            swap_page,
-            url_path="swap",
-            title="Swap",
-            icon="🔄",
-        ),
         st.Page(
             orderbook_page,
             url_path="orderbook",
