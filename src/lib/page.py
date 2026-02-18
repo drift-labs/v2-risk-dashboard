@@ -33,7 +33,7 @@ def needs_backend(page_callable: Callable):
 
     def page_with_guard():
         try:
-            fetch_api_data("metadata", "", retry=True)
+            fetch_api_data("metadata", "")
         except Exception as e:
             print(e)
             st.error(e)
