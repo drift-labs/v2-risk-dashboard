@@ -7,7 +7,7 @@ pandas==2.2.3
 python-dotenv==1.0.1
 pydantic==2.10.6
 solana==0.36.6
-streamlit==1.42.1
+streamlit==1.54.0
 uvicorn==0.34.0
 requests==2.32.4
 plotly==6.0.0
