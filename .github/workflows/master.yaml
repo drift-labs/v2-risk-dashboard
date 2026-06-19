@@ -15,10 +15,10 @@ jobs:
       ECR_REPO_URI: 875427118836.dkr.ecr.eu-west-1.amazonaws.com/v2-risk-dashboard
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@master
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_PROD }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY_PROD }}
@@ -26,7 +26,7 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
 
       - name: Install kubectl
         run: |
@@ -49,10 +49,10 @@ jobs:
       ECR_REPO_URI: 875427118836.dkr.ecr.eu-west-1.amazonaws.com/v2-risk-dashboard
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@master
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_PROD }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY_PROD }}
@@ -60,7 +60,7 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
 
       - name: Docker build
         run: |
@@ -74,10 +74,10 @@ jobs:
     needs: [build-frontend, build-backend]
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@master
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_PROD }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY_PROD }}
